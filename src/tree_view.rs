@@ -5,7 +5,7 @@ use eframe::egui;
 use egui_json_tree::render::DefaultRender;
 use egui_json_tree::{DefaultExpand, JsonTree};
 
-pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>, search: &str) -> Option<String> {
+pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>) -> Option<String> {
     let Some(val) = parsed else {
         ui.centered_and_justified(|ui| {
             ui.label("No valid JSON to display");
@@ -18,17 +18,8 @@ pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>, search: &str)
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // The tree auto-resets its expansion state whenever this setting
-            // changes, so no manual reset is needed (doing it every frame
-            // would prevent the user from collapsing nodes while searching).
-            let expand = if search.is_empty() {
-                DefaultExpand::ToLevel(1)
-            } else {
-                DefaultExpand::SearchResults(search)
-            };
-
             JsonTree::new("json-tree", val)
-                .default_expand(expand)
+                .default_expand(DefaultExpand::ToLevel(1))
                 .on_render(|ui, ctx| {
                     let resp = ctx
                         .render_default(ui)

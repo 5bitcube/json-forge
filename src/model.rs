@@ -28,6 +28,9 @@ impl EditKind {
 pub struct BlockBuffer {
     pub text: String,
     pub error: Option<String>,
+    pub kind: EditKind,
+    /// Bumped on every text change; lets caches (find results) stay valid.
+    pub rev: u64,
 }
 
 /// An edit produced by the block view, applied by the app after the UI pass.
@@ -187,19 +190,6 @@ pub fn format_bytes(n: usize) -> String {
     }
 }
 
-/// ASCII case-insensitive substring test without allocating.
-pub fn contains_ci(hay: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    let n = needle.as_bytes();
-    let h = hay.as_bytes();
-    if n.len() > h.len() {
-        return false;
-    }
-    h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
-}
-
 /// Single-line preview of `text`, at most `max` chars.
 pub fn preview(text: &str, max: usize) -> String {
     let mut out = String::new();
@@ -299,8 +289,6 @@ mod tests {
         assert_eq!(s.system, Some((4, 1)));
         assert_eq!(s.messages.map(|m| m.0), Some(1));
         assert_eq!(s.usage.as_deref(), Some("in 5 / out 7 / cache read 3"));
-        assert!(contains_ci("Hello World", "WORLD"));
-        assert!(!contains_ci("Hello", "World"));
         assert_eq!(preview("a\nb\tc", 10), "a b c");
         assert_eq!(preview("abcdef", 3), "abc...");
         assert_eq!(char_size(1500), "1.5K");

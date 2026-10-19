@@ -4,6 +4,7 @@ mod app;
 mod block_view;
 mod editor_view;
 mod file_ops;
+mod find;
 mod model;
 mod recent;
 mod tree_view;

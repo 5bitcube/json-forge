@@ -10,3 +10,4 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 rfd = "0.15"
 arboard = "3"
+regex = "1"

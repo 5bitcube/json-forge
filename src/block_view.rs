@@ -10,9 +10,10 @@ use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, 
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::find::{self, BlockHit, FindState, Range as FindRange};
 use crate::model::{
-    char_size, contains_ci, format_bytes, is_leaf, pointer_related, preview, value_text,
-    BlockBuffer, DocStats, EditKind, PendingEdit,
+    char_size, format_bytes, is_leaf, pointer_related, preview, value_text, BlockBuffer, DocStats, EditKind,
+    PendingEdit,
 };
 
 /// Blocks larger than this start collapsed.
@@ -95,7 +96,8 @@ impl Palette {
 pub struct BlockCtx<'a> {
     pub buffers: &'a mut HashMap<String, BlockBuffer>,
     pub edits: &'a mut Vec<PendingEdit>,
-    pub search: &'a str,
+    /// Find / replace: match ranges per block, current match, filter flag.
+    pub find: &'a mut FindState,
     /// JSON pointer to scroll to; cleared once a block claims it.
     pub scroll_to: &'a mut Option<String>,
     /// Force every block open (Some(true)) or closed (Some(false)) this frame.
@@ -104,8 +106,7 @@ pub struct BlockCtx<'a> {
     /// Parse error of the raw text while the blocks still show the last valid parse.
     pub stale_error: Option<&'a str>,
     pub pal: Palette,
-    /// Output: blocks matching the search / total blocks.
-    pub matches: usize,
+    /// Output: number of blocks rendered (also the render-order index).
     pub total: usize,
 }
 
@@ -630,25 +631,37 @@ fn seed_text(kind: EditKind, value: &Value) -> String {
 }
 
 fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
-    let BlockCtx { buffers, edits, search, scroll_to, force_open, pal, matches, total, .. } = cx;
+    let BlockCtx { buffers, edits, find, scroll_to, force_open, pal, total, .. } = cx;
     let pal = *pal;
+    let index = *total;
     *total += 1;
 
-    let entry = buffers
-        .entry(b.pointer.clone())
-        .or_insert_with(|| BlockBuffer { text: seed_text(b.kind, b.value), error: None });
+    let entry = buffers.entry(b.pointer.clone()).or_insert_with(|| BlockBuffer {
+        text: seed_text(b.kind, b.value),
+        error: None,
+        kind: b.kind,
+        rev: 0,
+    });
 
     let is_target = scroll_to.as_deref().is_some_and(|t| pointer_related(&b.pointer, t));
 
-    if !search.is_empty() {
-        let hit = contains_ci(&b.label, search)
-            || contains_ci(&entry.text, search)
-            || b.meta.iter().any(|m| contains_ci(m, search));
-        if !hit && !is_target {
+    // Find / replace: matches in this block's text.
+    let ranges: Vec<FindRange> = if find.active() {
+        find.ranges_for(&b.pointer, entry.rev, &entry.text).to_vec()
+    } else {
+        Vec::new()
+    };
+    let is_find_target = find.current.as_ref().is_some_and(|t| t.pointer == b.pointer);
+    let current_range = if is_find_target { find.current.as_ref().map(|t| t.range) } else { None };
+    if find.active() {
+        if find.filter && ranges.is_empty() && !is_target {
             return;
         }
-        *matches += 1;
+        if !ranges.is_empty() {
+            find.hits.push(BlockHit { index, pointer: b.pointer.clone(), ranges: ranges.clone() });
+        }
     }
+    let highlight = find.open && !ranges.is_empty();
 
     let id = ui.make_persistent_id(("block", &b.pointer));
     let default_open = entry.text.len() <= AUTO_COLLAPSE_CHARS;
@@ -656,7 +669,7 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
     if let Some(open) = *force_open {
         state.set_open(open);
     }
-    if is_target {
+    if is_target || (is_find_target && find.scroll_pending) {
         state.set_open(true);
     }
 
@@ -737,23 +750,36 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                         ui.colored_label(pal.error, err);
                         ui.add_space(2.0);
                     }
-                    let salt = ("edit", &b.pointer);
-                    let resp = match b.kind {
-                        EditKind::Scalar => ui.add(
-                            egui::TextEdit::singleline(&mut entry.text)
-                                .id_salt(salt)
-                                .code_editor()
-                                .desired_width(f32::INFINITY),
-                        ),
-                        _ => ui.add(
-                            egui::TextEdit::multiline(&mut entry.text)
-                                .id_salt(salt)
-                                .code_editor()
-                                .desired_rows(1)
-                                .desired_width(f32::INFINITY),
-                        ),
+                    let edit_id = egui::Id::new(("edit", b.pointer.as_str()));
+                    if is_find_target && find.select_pending {
+                        if let Some(r) = current_range {
+                            find::select_range(ui.ctx(), edit_id, &entry.text, r);
+                        }
+                        find.select_pending = false;
+                    }
+                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let job = find::highlight_job(ui, buf.as_str(), wrap_width, &ranges, current_range);
+                        ui.fonts_mut(|f| f.layout_job(job))
                     };
-                    if resp.changed() {
+                    let mut edit = match b.kind {
+                        EditKind::Scalar => egui::TextEdit::singleline(&mut entry.text),
+                        _ => egui::TextEdit::multiline(&mut entry.text).desired_rows(1),
+                    }
+                    .id(edit_id)
+                    .code_editor()
+                    .desired_width(f32::INFINITY);
+                    if highlight {
+                        edit = edit.layouter(&mut layouter);
+                    }
+                    let out = edit.show(ui);
+                    if is_find_target && find.scroll_pending {
+                        if let Some(r) = current_range {
+                            find::scroll_to_range(ui, &out, &entry.text, r);
+                        }
+                        find.scroll_pending = false;
+                    }
+                    if out.response.response.changed() {
+                        entry.rev += 1;
                         edits.push(PendingEdit { pointer: b.pointer.clone(), kind: b.kind, text: entry.text.clone() });
                     }
                 });

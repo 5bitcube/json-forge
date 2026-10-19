@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::block_view::{self, BlockCtx, Palette};
-use crate::editor_view;
+use crate::editor_view::{self, RawFind, EDITOR_ID};
 use crate::file_ops::{self, Confirm};
+use crate::find::{self, BlockHit, FindAction, FindState, Seek};
 use crate::model::{apply_edit, format_bytes, pointer_parent, BlockBuffer, DocStats, PendingEdit};
 use crate::recent::RecentFiles;
 use crate::tree_view;
@@ -40,7 +41,6 @@ pub struct ForgeApp {
     parsed: Option<Value>,
     parse_error: Option<String>,
     file_path: Option<PathBuf>,
-    search_query: String,
     modified: bool,
     view_mode: ViewMode,
     /// Serialize without whitespace (file was minified when loaded).
@@ -54,7 +54,7 @@ pub struct ForgeApp {
     status: Option<StatusMsg>,
     scroll_to: Option<String>,
     force_open: Option<bool>,
-    search_matches: (usize, usize),
+    find: FindState,
     recent: RecentFiles,
     last_title: String,
     allow_close: bool,
@@ -112,7 +112,6 @@ impl ForgeApp {
             parsed: None,
             parse_error: None,
             file_path: None,
-            search_query: String::new(),
             modified: false,
             view_mode: ViewMode::Blocks,
             compact: false,
@@ -124,7 +123,7 @@ impl ForgeApp {
             status: None,
             scroll_to: None,
             force_open: None,
-            search_matches: (0, 0),
+            find: FindState::default(),
             recent: RecentFiles::load(),
             last_title: String::new(),
             allow_close: false,
@@ -204,6 +203,7 @@ impl ForgeApp {
         self.file_path = path;
         self.modified = false;
         self.block_buffers.clear();
+        self.find.reset_document();
         self.raw_dirty_at = None;
         self.text_dirty_at = None;
         self.scroll_to = None;
@@ -236,6 +236,7 @@ impl ForgeApp {
                 self.parsed = Some(v);
                 self.parse_error = None;
                 self.block_buffers.clear();
+                self.find.cache.clear();
             }
             Err(e) => self.parse_error = Some(e),
         }
@@ -272,6 +273,7 @@ impl ForgeApp {
                     self.text_dirty_at = Some(Instant::now());
                     if applied.kind_changed {
                         self.block_buffers.remove(&edit.pointer);
+                        self.find.cache.remove(&edit.pointer);
                     } else if let Some(buf) = self.block_buffers.get_mut(&edit.pointer) {
                         buf.error = None;
                     }
@@ -302,6 +304,7 @@ impl ForgeApp {
             }
         }
         self.view_mode = mode;
+        self.find.reset_document();
     }
 
     // ----- file operations --------------------------------------------------
@@ -429,6 +432,167 @@ impl ForgeApp {
         }
     }
 
+    // ----- find / replace ---------------------------------------------------
+
+    /// Single-line selection of whichever editor has keyboard focus.
+    fn selected_text(&self, ctx: &egui::Context) -> Option<String> {
+        let focused = ctx.memory(|m| m.focused())?;
+        let text: &str = if focused == egui::Id::new(EDITOR_ID) {
+            &self.json_text
+        } else {
+            let (_, buf) = self
+                .block_buffers
+                .iter()
+                .find(|(p, _)| egui::Id::new(("edit", p.as_str())) == focused)?;
+            &buf.text
+        };
+        let range = egui::TextEdit::load_state(ctx, focused)?.cursor.char_range()?;
+        let (a, b) = (range.primary.index.0.min(range.secondary.index.0), range.primary.index.0.max(range.secondary.index.0));
+        if a == b {
+            return None;
+        }
+        let sel: String = text.chars().skip(a).take(b - a).collect();
+        if sel.contains('\n') || sel.chars().count() > 200 {
+            return None;
+        }
+        Some(sel)
+    }
+
+    fn open_find(&mut self, ctx: &egui::Context, replace: bool) {
+        if let Some(sel) = self.selected_text(ctx) {
+            self.find.query = sel;
+        }
+        self.find.open = true;
+        if replace {
+            self.find.focus_replace = true;
+        } else {
+            self.find.focus_find = true;
+        }
+    }
+
+    /// Where "Find" starts when there is no current match.
+    fn find_start(&self, ctx: &egui::Context) -> Seek {
+        if self.view_mode != ViewMode::Raw {
+            return Seek::Forward { block: 0, pos: 0 };
+        }
+        let pos = egui::TextEdit::load_state(ctx, egui::Id::new(EDITOR_ID))
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| r.primary.index.0.min(r.secondary.index.0))
+            .map(|ci| self.json_text.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(self.json_text.len()))
+            .unwrap_or(0);
+        Seek::Forward { block: 0, pos }
+    }
+
+    fn run_find_action(&mut self, ctx: &egui::Context, action: FindAction) {
+        let raw = self.view_mode == ViewMode::Raw;
+        match action {
+            FindAction::Close => {
+                self.find.open = false;
+                self.find.filter = false;
+                // Hand focus back to the editor holding the current match.
+                let id = match &self.find.current {
+                    Some(t) if !raw => Some(egui::Id::new(("edit", t.pointer.as_str()))),
+                    _ if raw => Some(egui::Id::new(EDITOR_ID)),
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                    self.find.select_pending = self.find.current.is_some();
+                }
+            }
+            FindAction::FindAll => {
+                if raw {
+                    self.set_status("Find All filters blocks: switch to Blocks mode to use it", true);
+                } else {
+                    self.find.filter = !self.find.filter;
+                }
+            }
+            FindAction::Next | FindAction::Prev => {
+                if self.find.query.is_empty() {
+                    self.find.open = true;
+                    self.find.focus_find = true;
+                    return;
+                }
+                let start = self.find_start(ctx);
+                self.find.step(action == FindAction::Next, start);
+            }
+            FindAction::Replace => {
+                if !self.find.active() {
+                    return;
+                }
+                let Some(t) = self.find.current.clone() else {
+                    let start = self.find_start(ctx);
+                    self.find.step(true, start);
+                    return;
+                };
+                let Some(m) = &self.find.matcher else { return };
+                let repl = self.find.replacement.clone();
+                let result = if raw {
+                    m.replace_one(&mut self.json_text, t.range, &repl).map(|end| (end, None))
+                } else {
+                    match self.block_buffers.get_mut(&t.pointer) {
+                        Some(buf) => m.replace_one(&mut buf.text, t.range, &repl).map(|end| {
+                            buf.rev += 1;
+                            (end, Some(PendingEdit { pointer: t.pointer.clone(), kind: buf.kind, text: buf.text.clone() }))
+                        }),
+                        None => None,
+                    }
+                };
+                self.find.current = None;
+                match result {
+                    Some((end, edit)) => {
+                        if let Some(edit) = edit {
+                            self.apply_edits(vec![edit]);
+                        } else {
+                            self.modified = true;
+                            self.raw_dirty_at = Some(Instant::now());
+                        }
+                        self.find.seek = Some(Seek::Forward { block: t.block, pos: end });
+                    }
+                    None => self.set_status("The text under the match changed; find it again", true),
+                }
+            }
+            FindAction::ReplaceAll => {
+                let Some(m) = &self.find.matcher else { return };
+                let repl = self.find.replacement.clone();
+                let (count, blocks) = if raw {
+                    let (new_text, n) = m.replace_all(&self.json_text, &repl);
+                    if n > 0 {
+                        self.json_text = new_text;
+                        self.modified = true;
+                        self.raw_dirty_at = Some(Instant::now());
+                    }
+                    (n, 0)
+                } else {
+                    let pointers: Vec<String> = self.find.hits.iter().map(|h| h.pointer.clone()).collect();
+                    let mut edits = Vec::new();
+                    let mut n = 0;
+                    for p in pointers {
+                        let Some(buf) = self.block_buffers.get_mut(&p) else { continue };
+                        let (new_text, c) = m.replace_all(&buf.text, &repl);
+                        if c > 0 {
+                            buf.text = new_text;
+                            buf.rev += 1;
+                            n += c;
+                            edits.push(PendingEdit { pointer: p, kind: buf.kind, text: buf.text.clone() });
+                        }
+                    }
+                    let blocks = edits.len();
+                    self.apply_edits(edits);
+                    (n, blocks)
+                };
+                self.find.current = None;
+                if count == 0 {
+                    self.set_status(format!("No matches for \"{}\"", self.find.query), true);
+                } else if raw {
+                    self.set_status(format!("Replaced {} occurrence(s)", count), false);
+                } else {
+                    self.set_status(format!("Replaced {} occurrence(s) in {} block(s)", count, blocks), false);
+                }
+            }
+        }
+    }
+
     // ----- frame pieces -----------------------------------------------------
 
     fn handle_autoscroll(&mut self, ctx: &egui::Context) {
@@ -508,8 +672,38 @@ impl ForgeApp {
         if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::C)) {
             self.copy_document(ctx);
         }
+        // Find / replace (Atom keymap).
+        let cmd_alt = Modifiers::COMMAND.plus(Modifiers::ALT);
+        if ctx.input_mut(|i| i.consume_key(cmd_alt, Key::F)) {
+            self.open_find(ctx, true);
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
+            self.open_find(ctx, false);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::E)) {
+            if let Some(sel) = self.selected_text(ctx) {
+                self.find.query = sel;
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F3)) {
+            self.find.pending = Some(FindAction::Next);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F3)) {
+            self.find.pending = Some(FindAction::Prev);
+        }
+        if self.find.open {
+            if ctx.input_mut(|i| i.consume_key(cmd_alt, Key::Slash)) {
+                self.find.use_regex = !self.find.use_regex;
+            }
+            if ctx.input_mut(|i| i.consume_key(cmd_alt, Key::C)) {
+                self.find.case_sensitive = !self.find.case_sensitive;
+            }
+            if ctx.input_mut(|i| i.consume_key(cmd_alt, Key::W)) {
+                self.find.whole_word = !self.find.whole_word;
+            }
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.find.pending = Some(FindAction::Close);
+            }
         }
 
         // Ctrl+V with no text field focused loads the clipboard as a document.
@@ -595,16 +789,7 @@ impl ForgeApp {
             self.view_menu(ui);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_sized(
-                    [220.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.search_query)
-                        .id(egui::Id::new("search_box"))
-                        .hint_text("Search (Ctrl+F)"),
-                );
-                if !self.search_query.is_empty() && ui.small_button("x").clicked() {
-                    self.search_query.clear();
-                }
-                ui.add_space(12.0);
+                ui.add_space(4.0);
                 let mut mode = self.view_mode;
                 ui.selectable_value(&mut mode, ViewMode::Raw, "Raw");
                 ui.selectable_value(&mut mode, ViewMode::Blocks, "Blocks");
@@ -693,7 +878,18 @@ impl ForgeApp {
             }
             ui.separator();
             if ui.add(egui::Button::new("Find...").shortcut_text("Ctrl+F")).clicked() {
-                ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
+                let ctx = ui.ctx().clone();
+                self.open_find(&ctx, false);
+            }
+            if ui.add(egui::Button::new("Replace...").shortcut_text("Ctrl+Alt+F")).clicked() {
+                let ctx = ui.ctx().clone();
+                self.open_find(&ctx, true);
+            }
+            if ui.add(egui::Button::new("Find Next").shortcut_text("F3")).clicked() {
+                self.find.pending = Some(FindAction::Next);
+            }
+            if ui.add(egui::Button::new("Find Previous").shortcut_text("Shift+F3")).clicked() {
+                self.find.pending = Some(FindAction::Prev);
             }
         });
     }
@@ -747,12 +943,6 @@ impl ForgeApp {
             ui.separator();
             ui.label(format_bytes(self.json_text.len()));
 
-            if self.view_mode == ViewMode::Blocks && !self.search_query.is_empty() {
-                ui.separator();
-                let (m, t) = self.search_matches;
-                ui.label(format!("{} / {} blocks match", m, t));
-            }
-
             ui.separator();
             match &self.file_path {
                 Some(path) => {
@@ -771,6 +961,75 @@ impl ForgeApp {
                 }
             });
         });
+    }
+}
+
+impl ForgeApp {
+    fn main_view(&mut self, ui: &mut egui::Ui) {
+        self.find.hits.clear();
+        match self.view_mode {
+            ViewMode::Raw => {
+                let ranges: Vec<find::Range> =
+                    if self.find.active() { self.find.raw_ranges(&self.json_text).to_vec() } else { Vec::new() };
+                if !ranges.is_empty() {
+                    self.find.hits.push(BlockHit { index: 0, pointer: String::new(), ranges: ranges.clone() });
+                }
+                let current = self.find.current.as_ref().filter(|t| t.pointer.is_empty()).map(|t| t.range);
+                let rf = RawFind {
+                    ranges: &ranges,
+                    current,
+                    scroll: &mut self.find.scroll_pending,
+                    select: &mut self.find.select_pending,
+                    highlight: self.find.open,
+                };
+                if editor_view::show(ui, &mut self.json_text, self.parse_error.as_deref(), Some(rf)) {
+                    self.modified = true;
+                    self.raw_dirty_at = Some(Instant::now());
+                }
+            }
+            ViewMode::Blocks => {
+                let mut edits: Vec<PendingEdit> = Vec::new();
+                let pal = Palette::for_dark(ui.visuals().dark_mode);
+                let mut cx = BlockCtx {
+                    buffers: &mut self.block_buffers,
+                    edits: &mut edits,
+                    find: &mut self.find,
+                    scroll_to: &mut self.scroll_to,
+                    force_open: self.force_open,
+                    stats: &self.stats,
+                    stale_error: self.parse_error.as_deref(),
+                    pal,
+                    total: 0,
+                };
+                block_view::show(ui, &self.parsed, &mut cx);
+
+                self.force_open = None;
+                if !edits.is_empty() {
+                    self.apply_edits(edits);
+                }
+
+                // A tree click that no block claimed: retry with the parent
+                // pointer next frame, until the root gives up.
+                if let Some(unresolved) = self.scroll_to.take() {
+                    self.scroll_to = pointer_parent(&unresolved);
+                    if self.scroll_to.is_some() {
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
+        }
+
+        // Hits for this frame are complete: settle the current match and
+        // run whatever the panel or a shortcut asked for.
+        self.find.validate_current();
+        self.find.resolve_seek();
+        if let Some(action) = self.find.pending.take() {
+            let ctx = ui.ctx().clone();
+            self.run_find_action(&ctx, action);
+        }
+        if self.find.scroll_pending || self.find.select_pending || self.find.seek.is_some() {
+            ui.ctx().request_repaint();
+        }
     }
 }
 
@@ -797,53 +1056,30 @@ impl eframe::App for ForgeApp {
             .default_size(450.0)
             .min_size(200.0)
             .show(ui, |ui| {
-                if let Some(ptr) = tree_view::show(ui, &self.parsed, &self.search_query) {
+                if let Some(ptr) = tree_view::show(ui, &self.parsed) {
                     if self.view_mode == ViewMode::Blocks {
                         self.scroll_to = Some(ptr);
                     }
                 }
             });
 
-        egui::CentralPanel::default().show(ui, |ui| match self.view_mode {
-            ViewMode::Raw => {
-                if editor_view::show(ui, &mut self.json_text, self.parse_error.as_deref()) {
-                    self.modified = true;
-                    self.raw_dirty_at = Some(Instant::now());
-                }
-            }
-            ViewMode::Blocks => {
-                let mut edits: Vec<PendingEdit> = Vec::new();
-                let pal = Palette::for_dark(ui.visuals().dark_mode);
-                let mut cx = BlockCtx {
-                    buffers: &mut self.block_buffers,
-                    edits: &mut edits,
-                    search: &self.search_query,
-                    scroll_to: &mut self.scroll_to,
-                    force_open: self.force_open,
-                    stats: &self.stats,
-                    stale_error: self.parse_error.as_deref(),
-                    pal,
-                    matches: 0,
-                    total: 0,
-                };
-                block_view::show(ui, &self.parsed, &mut cx);
-                let (matches, total) = (cx.matches, cx.total);
-
-                self.search_matches = (matches, total);
-                self.force_open = None;
-                if !edits.is_empty() {
-                    self.apply_edits(edits);
-                }
-
-                // A tree click that no block claimed: retry with the parent
-                // pointer next frame, until the root gives up.
-                if let Some(unresolved) = self.scroll_to.take() {
-                    self.scroll_to = pointer_parent(&unresolved);
-                    if self.scroll_to.is_some() {
-                        ui.ctx().request_repaint();
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.find.refresh();
+            if self.find.open {
+                let raw = self.view_mode == ViewMode::Raw;
+                let fill = ui.visuals().panel_fill;
+                let frame = egui::Frame::new()
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                    .inner_margin(egui::Margin::symmetric(10, 8));
+                egui::Panel::bottom("find_panel").resizable(false).frame(frame).show(ui, |ui| {
+                    if let Some(action) = find::panel(ui, &mut self.find, raw) {
+                        self.find.pending = Some(action);
                     }
-                }
+                });
+                self.find.refresh();
             }
+            egui::CentralPanel::default().show(ui, |ui| self.main_view(ui));
         });
     }
 }
