@@ -1,11 +1,12 @@
 [package]
 name = "json-forge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
 egui_json_tree = "0.17"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 rfd = "0.15"
+arboard = "3"
