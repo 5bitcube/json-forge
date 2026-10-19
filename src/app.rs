@@ -16,6 +16,7 @@ use crate::block_view::{self, BlockCtx, Palette};
 use crate::editor_view;
 use crate::file_ops::{self, Confirm};
 use crate::model::{apply_edit, format_bytes, pointer_parent, BlockBuffer, DocStats, PendingEdit};
+use crate::recent::RecentFiles;
 use crate::tree_view;
 
 const RAW_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -54,6 +55,7 @@ pub struct ForgeApp {
     scroll_to: Option<String>,
     force_open: Option<bool>,
     search_matches: (usize, usize),
+    recent: RecentFiles,
     last_title: String,
     allow_close: bool,
     close_now: bool,
@@ -87,6 +89,14 @@ fn serialize(val: &Value, compact: bool, jsonl: bool) -> String {
     }
 }
 
+/// Short folder hint for a recent-file entry: the last directory component.
+fn parent_hint(path: &Path) -> String {
+    path.parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 fn format_error(e: &serde_json::Error) -> String {
     format!("Line {}, col {}: {}", e.line(), e.column(), e)
 }
@@ -115,6 +125,7 @@ impl ForgeApp {
             scroll_to: None,
             force_open: None,
             search_matches: (0, 0),
+            recent: RecentFiles::load(),
             last_title: String::new(),
             allow_close: false,
             close_now: false,
@@ -299,6 +310,7 @@ impl ForgeApp {
         match file_ops::write(path, &self.json_text) {
             Ok(()) => {
                 self.modified = false;
+                self.recent.push(path);
                 self.set_status(format!("Saved {}", path.display()), false);
                 true
             }
@@ -353,12 +365,18 @@ impl ForgeApp {
         match file_ops::read(&path) {
             Ok(text) => {
                 let name = path.display().to_string();
+                self.recent.push(&path);
                 self.load_text(text, Some(path));
                 if self.parse_error.is_none() {
                     self.set_status(format!("Opened {}", name), false);
                 }
             }
-            Err(e) => self.set_status(e, true),
+            Err(e) => {
+                if !path.exists() {
+                    self.recent.remove(&path);
+                }
+                self.set_status(e, true);
+            }
         }
     }
 
@@ -375,6 +393,21 @@ impl ForgeApp {
             self.view_mode = ViewMode::Blocks;
             self.set_status("Loaded JSON from clipboard", false);
         }
+    }
+
+    fn new_document(&mut self) {
+        if !self.confirm_discard() {
+            return;
+        }
+        self.load_text("{}".to_string(), None);
+        self.compact = false;
+        self.view_mode = ViewMode::Blocks;
+    }
+
+    fn copy_document(&mut self, ctx: &egui::Context) {
+        self.flush();
+        ctx.copy_text(self.json_text.clone());
+        self.set_status("Document copied to clipboard", false);
     }
 
     fn reformat(&mut self, compact: bool) {
@@ -469,6 +502,12 @@ impl ForgeApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
+            self.new_document();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::C)) {
+            self.copy_document(ctx);
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
         }
@@ -549,60 +588,11 @@ impl ForgeApp {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.button("Open").on_hover_text("Ctrl+O").clicked() {
-                self.open_dialog();
-            }
-            if ui.button("Save").on_hover_text("Ctrl+S").clicked() {
-                self.save();
-            }
-            if ui.button("Save As").on_hover_text("Ctrl+Shift+S").clicked() {
-                self.save_as();
-            }
-            if ui.button("Paste").on_hover_text("Load clipboard text as the document (Ctrl+V with nothing focused)").clicked() {
-                match file_ops::clipboard_text() {
-                    Ok(text) => self.paste_document(text),
-                    Err(e) => self.set_status(e, true),
-                }
-            }
-
-            ui.separator();
-
-            if ui.button("Format").clicked() {
-                self.reformat(false);
-            }
-            if ui.button("Minify").clicked() {
-                self.reformat(true);
-            }
-
-            ui.separator();
-
-            let mut mode = self.view_mode;
-            ui.selectable_value(&mut mode, ViewMode::Blocks, "Blocks");
-            ui.selectable_value(&mut mode, ViewMode::Raw, "Raw");
-            if mode != self.view_mode {
-                self.set_mode(mode);
-            }
-
-            if self.view_mode == ViewMode::Blocks {
-                ui.separator();
-                if ui.button("Expand all").clicked() {
-                    self.force_open = Some(true);
-                }
-                if ui.button("Collapse all").clicked() {
-                    self.force_open = Some(false);
-                }
-            }
-
-            ui.separator();
-
-            let dark = ui.ctx().theme() == egui::Theme::Dark;
-            let theme_label = if dark { "Light" } else { "Dark" };
-            if ui.button(theme_label).on_hover_text("Toggle theme").clicked() {
-                let pref = if dark { egui::ThemePreference::Light } else { egui::ThemePreference::Dark };
-                ui.ctx().set_theme(pref);
-            }
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            self.file_menu(ui);
+            self.edit_menu(ui);
+            self.view_menu(ui);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_sized(
@@ -614,7 +604,123 @@ impl ForgeApp {
                 if !self.search_query.is_empty() && ui.small_button("x").clicked() {
                     self.search_query.clear();
                 }
+                ui.add_space(12.0);
+                let mut mode = self.view_mode;
+                ui.selectable_value(&mut mode, ViewMode::Raw, "Raw");
+                ui.selectable_value(&mut mode, ViewMode::Blocks, "Blocks");
+                if mode != self.view_mode {
+                    self.set_mode(mode);
+                }
             });
+        });
+    }
+
+    fn file_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("File", |ui| {
+            ui.set_min_width(220.0);
+            if ui.add(egui::Button::new("New").shortcut_text("Ctrl+N")).clicked() {
+                self.new_document();
+            }
+            if ui.add(egui::Button::new("Open...").shortcut_text("Ctrl+O")).clicked() {
+                self.open_dialog();
+            }
+            ui.menu_button("Open Recent", |ui| {
+                ui.set_min_width(280.0);
+                if self.recent.is_empty() {
+                    ui.add_enabled(false, egui::Button::new("(no recent files)"));
+                    return;
+                }
+                let entries: Vec<PathBuf> = self.recent.iter().cloned().collect();
+                let mut chosen: Option<PathBuf> = None;
+                for (i, path) in entries.iter().enumerate() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.display().to_string());
+                    let label = format!("{}  {}", i + 1, name);
+                    let resp = ui.add(
+                        egui::Button::new(label)
+                            .right_text(egui::RichText::new(parent_hint(path)).weak().small()),
+                    );
+                    if resp.on_hover_text(path.display().to_string()).clicked() {
+                        chosen = Some(path.clone());
+                    }
+                }
+                ui.separator();
+                if ui.button("Clear Recent").clicked() {
+                    self.recent.clear();
+                }
+                if let Some(path) = chosen {
+                    if self.confirm_discard() {
+                        self.open_path(path);
+                    }
+                }
+            });
+            ui.separator();
+            if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() {
+                self.save();
+            }
+            if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() {
+                self.save_as();
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Exit").shortcut_text("Alt+F4")).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    }
+
+    fn edit_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Edit", |ui| {
+            ui.set_min_width(240.0);
+            let can_format = self.parsed.is_some();
+            if ui.add_enabled(can_format, egui::Button::new("Format Document")).clicked() {
+                self.reformat(false);
+            }
+            if ui.add_enabled(can_format, egui::Button::new("Minify Document")).clicked() {
+                self.reformat(true);
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Paste as Document").shortcut_text("Ctrl+V")).clicked() {
+                match file_ops::clipboard_text() {
+                    Ok(text) => self.paste_document(text),
+                    Err(e) => self.set_status(e, true),
+                }
+            }
+            if ui.add(egui::Button::new("Copy Document").shortcut_text("Ctrl+Shift+C")).clicked() {
+                let ctx = ui.ctx().clone();
+                self.copy_document(&ctx);
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Find...").shortcut_text("Ctrl+F")).clicked() {
+                ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
+            }
+        });
+    }
+
+    fn view_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("View", |ui| {
+            ui.set_min_width(200.0);
+            let mut mode = self.view_mode;
+            ui.radio_value(&mut mode, ViewMode::Blocks, "Blocks");
+            ui.radio_value(&mut mode, ViewMode::Raw, "Raw Text");
+            if mode != self.view_mode {
+                self.set_mode(mode);
+            }
+            ui.separator();
+            let blocks = self.view_mode == ViewMode::Blocks;
+            if ui.add_enabled(blocks, egui::Button::new("Expand All Blocks")).clicked() {
+                self.force_open = Some(true);
+            }
+            if ui.add_enabled(blocks, egui::Button::new("Collapse All Blocks")).clicked() {
+                self.force_open = Some(false);
+            }
+            ui.separator();
+            let mut dark = ui.ctx().theme() == egui::Theme::Dark;
+            if ui.checkbox(&mut dark, "Dark Mode").changed() {
+                let pref = if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light };
+                ui.ctx().set_theme(pref);
+            }
         });
     }
 
@@ -684,7 +790,7 @@ impl eframe::App for ForgeApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
 
         egui::Panel::left("tree_panel")

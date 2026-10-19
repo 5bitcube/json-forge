@@ -5,6 +5,7 @@ mod block_view;
 mod editor_view;
 mod file_ops;
 mod model;
+mod recent;
 mod tree_view;
 
 use app::ForgeApp;
