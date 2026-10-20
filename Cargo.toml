@@ -13,3 +13,6 @@ arboard = "3"
 regex = "1"
 interprocess = "2"
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+winresource = "0.1"
