@@ -3,19 +3,22 @@
 mod app;
 mod autoscroll;
 mod block_view;
+mod document;
 mod editor_view;
 mod file_ops;
 mod find;
 mod model;
 mod recent;
+mod tab_bar;
 mod tree_view;
 
 use app::ForgeApp;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
-    // `json-forge.exe file.json` (also used by Explorer "Open with").
-    let initial = std::env::args_os().nth(1).map(PathBuf::from);
+    // `json-forge.exe a.json b.json` opens one tab per file (also used by
+    // Explorer "Open with").
+    let initial: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

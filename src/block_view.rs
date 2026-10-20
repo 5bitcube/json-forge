@@ -95,6 +95,8 @@ impl Palette {
 
 /// Everything the block view needs from the app for one frame.
 pub struct BlockCtx<'a> {
+    /// Document id: scopes the editor widget ids (see `edit_id`).
+    pub doc: u64,
     pub buffers: &'a mut HashMap<String, BlockBuffer>,
     pub edits: &'a mut Vec<PendingEdit>,
     /// Find / replace: match ranges per block, current match, filter flag.
@@ -161,6 +163,11 @@ fn escape_key(k: &str) -> String {
 }
 
 /// `/messages/0/content/1/text` -> `messages[0].content[1].text`
+/// Widget id of the editor for block `pointer` of document `doc`.
+pub fn edit_id(doc: u64, pointer: &str) -> egui::Id {
+    egui::Id::new(("edit", doc, pointer))
+}
+
 pub fn display_path(ptr: &str) -> String {
     if ptr.is_empty() {
         return "(root)".to_string();
@@ -633,7 +640,8 @@ fn seed_text(kind: EditKind, value: &Value) -> String {
 }
 
 fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
-    let BlockCtx { buffers, edits, find, scroll_to, force_open, pal, total, .. } = cx;
+    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, .. } = cx;
+    let doc = *doc;
     let pal = *pal;
     let index = *total;
     *total += 1;
@@ -752,7 +760,7 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                         ui.colored_label(pal.error, err);
                         ui.add_space(2.0);
                     }
-                    let edit_id = egui::Id::new(("edit", b.pointer.as_str()));
+                    let edit_id = edit_id(doc, &b.pointer);
                     if is_find_target && find.select_pending {
                         if let Some(r) = current_range {
                             find::select_range(ui.ctx(), edit_id, &entry.text, r);

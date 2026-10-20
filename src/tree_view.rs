@@ -7,7 +7,8 @@ use crate::autoscroll;
 use egui_json_tree::render::DefaultRender;
 use egui_json_tree::{DefaultExpand, JsonTree};
 
-pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>) -> Option<String> {
+/// `doc` scopes the expansion state so each tab remembers its own tree.
+pub fn show(ui: &mut egui::Ui, doc: u64, parsed: &Option<serde_json::Value>) -> Option<String> {
     let Some(val) = parsed else {
         ui.centered_and_justified(|ui| {
             ui.label("No valid JSON to display");
@@ -20,7 +21,7 @@ pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>) -> Option<Str
     let out = egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            JsonTree::new("json-tree", val)
+            JsonTree::new(("json-tree", doc), val)
                 .default_expand(DefaultExpand::ToLevel(1))
                 .on_render(|ui, ctx| {
                     let resp = ctx

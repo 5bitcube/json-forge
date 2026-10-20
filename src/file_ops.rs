@@ -3,11 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
-pub fn pick_open() -> Option<PathBuf> {
+/// Multi-select open dialog; empty when cancelled.
+pub fn pick_open() -> Vec<PathBuf> {
     rfd::FileDialog::new()
         .add_filter("JSON", &["json", "jsonl"])
         .add_filter("All files", &["*"])
-        .pick_file()
+        .pick_files()
+        .unwrap_or_default()
 }
 
 pub fn pick_save(current: Option<&Path>) -> Option<PathBuf> {

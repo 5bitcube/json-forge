@@ -7,6 +7,11 @@ use crate::find::{self, Range};
 
 pub const EDITOR_ID: &str = "raw_editor";
 
+/// Widget id of the raw editor of document `doc`.
+pub fn editor_id(doc: u64) -> egui::Id {
+    egui::Id::new((EDITOR_ID, doc))
+}
+
 /// Find state the raw editor needs for one frame.
 pub struct RawFind<'a> {
     pub ranges: &'a [Range],
@@ -18,7 +23,7 @@ pub struct RawFind<'a> {
 }
 
 /// Returns true when the text changed this frame.
-pub fn show(ui: &mut egui::Ui, json_text: &mut String, error: Option<&str>, find: Option<RawFind<'_>>) -> bool {
+pub fn show(ui: &mut egui::Ui, id: egui::Id, json_text: &mut String, error: Option<&str>, find: Option<RawFind<'_>>) -> bool {
     if let Some(err) = error {
         egui::Frame::new()
             .fill(egui::Color32::from_rgb(140, 45, 45))
@@ -32,7 +37,6 @@ pub fn show(ui: &mut egui::Ui, json_text: &mut String, error: Option<&str>, find
     }
 
     let available = ui.available_size();
-    let id = egui::Id::new(EDITOR_ID);
 
     let (ranges, current, highlight, mut scroll) = match &find {
         Some(f) => (f.ranges, f.current, f.highlight, *f.scroll),
