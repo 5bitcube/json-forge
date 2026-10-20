@@ -102,10 +102,17 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Apply `case` to the selection in `text`, or to the word under the cursor
-/// when nothing is selected, and move the selection onto the result.
+/// Apply `case` to the selection in `text` and move the selection onto the
+/// result. When the field's own selection has collapsed to a caret,
+/// `remembered` (the selection seen while it was focused) is used if the
+/// caret still sits inside it; failing that, the word under the caret.
 /// Ok(false) means the text already had that case.
-pub fn transform_in(text: &mut String, state: &mut TextEditState, case: Case) -> Result<bool, &'static str> {
+pub fn transform_in(
+    text: &mut String,
+    state: &mut TextEditState,
+    case: Case,
+    remembered: Option<(usize, usize)>,
+) -> Result<bool, &'static str> {
     let chars: Vec<char> = text.chars().collect();
     let (mut a, mut b) = state
         .cursor
@@ -114,6 +121,13 @@ pub fn transform_in(text: &mut String, state: &mut TextEditState, case: Case) ->
         .unwrap_or((0, 0));
     let (a0, b0) = (a.min(chars.len()), b.min(chars.len()));
     (a, b) = (a0, b0);
+    if a == b {
+        if let Some((ra, rb)) = remembered {
+            if ra < rb && rb <= chars.len() && ra <= a && a <= rb {
+                (a, b) = (ra, rb);
+            }
+        }
+    }
     if a == b {
         while a > 0 && is_word_char(chars[a - 1]) {
             a -= 1;
@@ -161,12 +175,12 @@ mod tests {
         let mut text = String::from("alpha beta gamma");
         let mut st = TextEditState::default();
         st.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(6), CCursor::new(10))));
-        assert_eq!(transform_in(&mut text, &mut st, Case::Upper), Ok(true));
+        assert_eq!(transform_in(&mut text, &mut st, Case::Upper, None), Ok(true));
         assert_eq!(text, "alpha BETA gamma");
 
         // Caret inside "gamma", nothing selected: the word is used.
         st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(13))));
-        assert_eq!(transform_in(&mut text, &mut st, Case::Title), Ok(true));
+        assert_eq!(transform_in(&mut text, &mut st, Case::Title, None), Ok(true));
         assert_eq!(text, "alpha BETA Gamma");
         let r = st.cursor.char_range().unwrap();
         let (lo, hi) = (r.primary.index.0.min(r.secondary.index.0), r.primary.index.0.max(r.secondary.index.0));
@@ -175,6 +189,21 @@ mod tests {
         // Caret between two spaces: nothing to do.
         let mut spaced = String::from("a  b");
         st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(2))));
-        assert_eq!(transform_in(&mut spaced, &mut st, Case::Upper), Err("Select some text first"));
+        assert_eq!(transform_in(&mut spaced, &mut st, Case::Upper, None), Err("Select some text first"));
+    }
+
+    #[test]
+    fn remembered_selection_is_used_when_the_caret_is_inside_it() {
+        let mut text = String::from("alpha beta gamma");
+        let mut st = TextEditState::default();
+        // Focus loss left only a caret at the end of what was selected.
+        st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(10))));
+        assert_eq!(transform_in(&mut text, &mut st, Case::Upper, Some((0, 10))), Ok(true));
+        assert_eq!(text, "ALPHA BETA gamma");
+
+        // Caret outside the remembered range: the word under it wins.
+        st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(13))));
+        assert_eq!(transform_in(&mut text, &mut st, Case::Upper, Some((0, 10))), Ok(true));
+        assert_eq!(text, "ALPHA BETA GAMMA");
     }
 }

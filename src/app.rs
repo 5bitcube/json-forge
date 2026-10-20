@@ -40,6 +40,9 @@ pub struct ForgeApp {
     allow_close: bool,
     close_now: bool,
     autoscroll: Option<AutoScroll>,
+    /// A primary click or caret key happened last frame: if the focused
+    /// field's selection is now empty, the user collapsed it on purpose.
+    selection_cleared: bool,
     /// Files handed over by later launches (see `single_instance`).
     incoming: Receiver<Vec<PathBuf>>,
 }
@@ -101,6 +104,7 @@ impl ForgeApp {
             allow_close: false,
             close_now: false,
             autoscroll: None,
+            selection_cleared: false,
             incoming,
         };
 
@@ -354,12 +358,37 @@ impl ForgeApp {
     /// Track which of this document's text fields had focus last, so the
     /// Edit menu (which takes focus away) still knows where to apply a change.
     fn remember_editor(&mut self, ctx: &egui::Context) {
+        let cleared = std::mem::replace(
+            &mut self.selection_cleared,
+            ctx.input(|i| {
+                i.pointer.primary_pressed()
+                    || i.events.iter().any(|e| match e {
+                        egui::Event::Key { pressed: true, modifiers, .. } => !modifiers.command && !modifiers.alt,
+                        egui::Event::Text(_) => true,
+                        _ => false,
+                    })
+            }),
+        );
         let Some(focused) = ctx.memory(|m| m.focused()) else { return };
         let doc = self.doc_mut();
         let is_editor = focused == editor_view::editor_id(doc.id)
             || doc.block_buffers.keys().any(|p| block_view::edit_id(doc.id, p) == focused);
-        if is_editor {
+        if !is_editor {
+            return;
+        }
+        if doc.last_editor != Some(focused) {
             doc.last_editor = Some(focused);
+            doc.last_selection = None;
+        }
+        let range = egui::TextEdit::load_state(ctx, focused)
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| (r.primary.index.0.min(r.secondary.index.0), r.primary.index.0.max(r.secondary.index.0)));
+        match range {
+            Some((a, b)) if a != b => doc.last_selection = Some((a, b)),
+            // A right click or a menu collapses the selection too; only a
+            // primary click or a caret key means the user let go of it.
+            _ if cleared => doc.last_selection = None,
+            _ => {}
         }
     }
 
@@ -383,7 +412,8 @@ impl ForgeApp {
             None => &mut doc.json_text,
             Some(p) => &mut doc.block_buffers.get_mut(p).expect("pointer came from the map").text,
         };
-        let result = text_case::transform_in(text, &mut state, case);
+        let remembered = if doc.last_editor == Some(id) { doc.last_selection } else { None };
+        let result = text_case::transform_in(text, &mut state, case, remembered);
         state.store(ctx, id);
         ctx.memory_mut(|m| m.request_focus(id));
         match result {
