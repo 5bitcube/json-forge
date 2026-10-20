@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::autoscroll;
 use crate::find::{self, Range};
-use crate::text_case::{self, Case};
+use crate::text_ops::{self, TextOp};
 
 pub const EDITOR_ID: &str = "raw_editor";
 
@@ -23,15 +23,15 @@ pub struct RawFind<'a> {
     pub highlight: bool,
 }
 
-/// Returns true when the text changed this frame. `transform` receives a
-/// case change picked from the context menu; the app applies it.
+/// Returns true when the text changed this frame. `op` receives the item
+/// picked from the context menu; the app applies it.
 pub fn show(
     ui: &mut egui::Ui,
     id: egui::Id,
     json_text: &mut String,
     error: Option<&str>,
     find: Option<RawFind<'_>>,
-    transform: &mut Option<Case>,
+    op: &mut Option<TextOp>,
 ) -> bool {
     if let Some(err) = error {
         egui::Frame::new()
@@ -75,10 +75,12 @@ pub fn show(
                 if highlight && !ranges.is_empty() {
                     edit = edit.layouter(&mut layouter);
                 }
+                let before = text_ops::selection_before(ui.ctx(), id);
                 let out = edit.show(ui);
+                text_ops::keep_selection_on_right_click(ui.ctx(), id, before, &out.response.response);
                 out.response.response.context_menu(|ui| {
-                    if let Some(case) = text_case::menu(ui) {
-                        *transform = Some(case);
+                    if let Some(picked) = text_ops::context_menu(ui) {
+                        *op = Some(picked);
                     }
                 });
                 if scroll {

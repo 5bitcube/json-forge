@@ -14,7 +14,7 @@ JSON Forge opens a JSON file and shows it two ways at once: a collapsible tree o
 - **Raw mode** – the whole document in a code editor, with parse errors reported by line and column. Switch back to Blocks when it parses again.
 - **Tabs** – open as many documents as you like. Opening a file while JSON Forge is already running sends it to the existing window as a new tab.
 - **Find and replace** – Atom-style panel at the bottom with regex, case and whole-word toggles, a match counter, Find All to filter blocks down to the ones that match, and Replace / Replace All in either view.
-- **Transform text** – UPPER CASE, lower case, Title Case and Sentence case for the selection, or the word under the cursor, from Edit > Transform Text or a right-click in any text field.
+- **Context menu** – right-click in any text field for Cut, Copy, Paste, Select All and Transform Text (UPPER CASE, lower case, Title Case, Sentence case) on the selection or the word under the cursor.
 - **Tree navigation** – click any node in the tree to scroll the block view to it.
 - **JSON Lines** – `.jsonl` files and any text that is one JSON value per line load as an array of records and save back the same way.
 - **Format and minify**, paste the clipboard as a new document, copy the document, drag and drop, recent files, light and dark themes, and Chrome-style middle-button autoscroll.

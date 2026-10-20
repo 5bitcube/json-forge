@@ -11,7 +11,7 @@ mod model;
 mod recent;
 mod single_instance;
 mod tab_bar;
-mod text_case;
+mod text_ops;
 mod tree_view;
 
 use app::ForgeApp;

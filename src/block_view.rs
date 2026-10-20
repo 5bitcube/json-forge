@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::autoscroll;
 use crate::find::{self, BlockHit, FindState, Range as FindRange};
-use crate::text_case::{self, Case};
+use crate::text_ops::{self, TextOp};
 use crate::model::{
     char_size, format_bytes, is_leaf, pointer_related, preview, value_text, BlockBuffer, DocStats, EditKind,
     PendingEdit,
@@ -112,8 +112,8 @@ pub struct BlockCtx<'a> {
     pub pal: Palette,
     /// Output: number of blocks rendered (also the render-order index).
     pub total: usize,
-    /// Output: case change picked from an editor's context menu.
-    pub transform: &'a mut Option<(egui::Id, Case)>,
+    /// Output: item picked from an editor's context menu.
+    pub op: &'a mut Option<(egui::Id, TextOp)>,
 }
 
 struct Block<'v> {
@@ -643,7 +643,7 @@ fn seed_text(kind: EditKind, value: &Value) -> String {
 }
 
 fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
-    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, transform, .. } = cx;
+    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, op, .. } = cx;
     let doc = *doc;
     let pal = *pal;
     let index = *total;
@@ -784,10 +784,12 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                     if highlight {
                         edit = edit.layouter(&mut layouter);
                     }
+                    let before = text_ops::selection_before(ui.ctx(), edit_id);
                     let out = edit.show(ui);
+                    text_ops::keep_selection_on_right_click(ui.ctx(), edit_id, before, &out.response.response);
                     out.response.response.context_menu(|ui| {
-                        if let Some(case) = text_case::menu(ui) {
-                            **transform = Some((edit_id, case));
+                        if let Some(picked) = text_ops::context_menu(ui) {
+                            **op = Some((edit_id, picked));
                         }
                     });
                     if is_find_target && find.scroll_pending {

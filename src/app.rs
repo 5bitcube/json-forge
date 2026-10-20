@@ -16,7 +16,7 @@ use crate::model::{format_bytes, pointer_parent, PendingEdit};
 use crate::recent::RecentFiles;
 use crate::single_instance;
 use crate::tab_bar::{self, TabEvent, TabLabel};
-use crate::text_case::{self, Case};
+use crate::text_ops::{self, TextOp};
 use crate::tree_view;
 
 const RAW_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -40,9 +40,6 @@ pub struct ForgeApp {
     allow_close: bool,
     close_now: bool,
     autoscroll: Option<AutoScroll>,
-    /// A primary click or caret key happened last frame: if the focused
-    /// field's selection is now empty, the user collapsed it on purpose.
-    selection_cleared: bool,
     /// Files handed over by later launches (see `single_instance`).
     incoming: Receiver<Vec<PathBuf>>,
 }
@@ -104,7 +101,6 @@ impl ForgeApp {
             allow_close: false,
             close_now: false,
             autoscroll: None,
-            selection_cleared: false,
             incoming,
         };
 
@@ -353,84 +349,57 @@ impl ForgeApp {
         }
     }
 
-    // ----- text transforms --------------------------------------------------
+    // ----- editor context menu ----------------------------------------------
 
-    /// Track which of this document's text fields had focus last, so the
-    /// Edit menu (which takes focus away) still knows where to apply a change.
-    fn remember_editor(&mut self, ctx: &egui::Context) {
-        let cleared = std::mem::replace(
-            &mut self.selection_cleared,
-            ctx.input(|i| {
-                i.pointer.primary_pressed()
-                    || i.events.iter().any(|e| match e {
-                        egui::Event::Key { pressed: true, modifiers, .. } => !modifiers.command && !modifiers.alt,
-                        egui::Event::Text(_) => true,
-                        _ => false,
-                    })
-            }),
-        );
-        let Some(focused) = ctx.memory(|m| m.focused()) else { return };
-        let doc = self.doc_mut();
-        let is_editor = focused == editor_view::editor_id(doc.id)
-            || doc.block_buffers.keys().any(|p| block_view::edit_id(doc.id, p) == focused);
-        if !is_editor {
-            return;
-        }
-        if doc.last_editor != Some(focused) {
-            doc.last_editor = Some(focused);
-            doc.last_selection = None;
-        }
-        let range = egui::TextEdit::load_state(ctx, focused)
-            .and_then(|s| s.cursor.char_range())
-            .map(|r| (r.primary.index.0.min(r.secondary.index.0), r.primary.index.0.max(r.secondary.index.0)));
-        match range {
-            Some((a, b)) if a != b => doc.last_selection = Some((a, b)),
-            // A right click or a menu collapses the selection too; only a
-            // primary click or a caret key means the user let go of it.
-            _ if cleared => doc.last_selection = None,
-            _ => {}
-        }
-    }
-
-    /// Change the case of the selection (or the word at the caret) in
-    /// `target`, defaulting to the last focused text field.
-    fn transform_text(&mut self, ctx: &egui::Context, target: Option<egui::Id>, case: Case) {
-        let Some(id) = target.or(self.doc().last_editor) else {
-            self.set_status("Click into a text field first", true);
-            return;
+    /// Run a context-menu item on the text field `id` of the active document.
+    fn text_op(&mut self, ctx: &egui::Context, id: egui::Id, op: TextOp) {
+        let clipboard = if op == TextOp::Paste {
+            match file_ops::clipboard_text() {
+                Ok(text) => Some(text),
+                Err(e) => {
+                    self.set_status(e, true);
+                    return;
+                }
+            }
+        } else {
+            None
         };
         let doc = &mut self.docs[self.active];
         let did = doc.id;
         let raw = id == editor_view::editor_id(did);
         let pointer = if raw { None } else { doc.block_buffers.keys().find(|p| block_view::edit_id(did, p) == id).cloned() };
-        let state = egui::TextEdit::load_state(ctx, id);
-        let (Some(mut state), true) = (state, raw || pointer.is_some()) else {
-            self.set_status("Click into a text field first", true);
-            return;
-        };
+        let (Some(mut state), true) = (egui::TextEdit::load_state(ctx, id), raw || pointer.is_some()) else { return };
         let text = match &pointer {
             None => &mut doc.json_text,
             Some(p) => &mut doc.block_buffers.get_mut(p).expect("pointer came from the map").text,
         };
-        let remembered = if doc.last_editor == Some(id) { doc.last_selection } else { None };
-        let result = text_case::transform_in(text, &mut state, case, remembered);
+        let result = text_ops::apply(op, text, &mut state, clipboard.as_deref());
         state.store(ctx, id);
         ctx.memory_mut(|m| m.request_focus(id));
-        match result {
-            Err(msg) => self.set_status(msg, true),
-            Ok(false) => {}
-            Ok(true) => match pointer {
-                None => {
-                    doc.modified = true;
-                    doc.raw_dirty_at = Some(Instant::now());
-                }
-                Some(p) => {
-                    let buf = doc.block_buffers.get_mut(&p).expect("pointer came from the map");
-                    buf.rev += 1;
-                    let edit = PendingEdit { pointer: p, kind: buf.kind, text: buf.text.clone() };
-                    doc.apply_edits(vec![edit]);
-                }
-            },
+        let applied = match result {
+            Ok(applied) => applied,
+            Err(msg) => {
+                self.set_status(msg, true);
+                return;
+            }
+        };
+        if let Some(copied) = applied.copied {
+            ctx.copy_text(copied);
+        }
+        if !applied.changed {
+            return;
+        }
+        match pointer {
+            None => {
+                doc.modified = true;
+                doc.raw_dirty_at = Some(Instant::now());
+            }
+            Some(p) => {
+                let buf = doc.block_buffers.get_mut(&p).expect("pointer came from the map");
+                buf.rev += 1;
+                let edit = PendingEdit { pointer: p, kind: buf.kind, text: buf.text.clone() };
+                doc.apply_edits(vec![edit]);
+            }
         }
     }
 
@@ -865,13 +834,6 @@ impl ForgeApp {
             if ui.add_enabled(can_format, egui::Button::new("Minify Document")).clicked() {
                 self.reformat(true);
             }
-            ui.menu_button("Transform Text", |ui| {
-                ui.set_min_width(170.0);
-                if let Some(case) = text_case::menu(ui) {
-                    let ctx = ui.ctx().clone();
-                    self.transform_text(&ctx, None, case);
-                }
-            });
             ui.separator();
             if ui.add(egui::Button::new("Paste as Document").shortcut_text("Ctrl+V")).clicked() {
                 match file_ops::clipboard_text() {
@@ -1000,7 +962,7 @@ impl ForgeApp {
     }
 
     fn main_view(&mut self, ui: &mut egui::Ui) {
-        let mut transform: Option<(egui::Id, Case)> = None;
+        let mut op: Option<(egui::Id, TextOp)> = None;
         let doc = &mut self.docs[self.active];
         doc.find.hits.clear();
         match doc.view_mode {
@@ -1019,12 +981,12 @@ impl ForgeApp {
                     highlight: doc.find.open,
                 };
                 let id = editor_view::editor_id(doc.id);
-                let mut case = None;
-                if editor_view::show(ui, id, &mut doc.json_text, doc.parse_error.as_deref(), Some(rf), &mut case) {
+                let mut picked = None;
+                if editor_view::show(ui, id, &mut doc.json_text, doc.parse_error.as_deref(), Some(rf), &mut picked) {
                     doc.modified = true;
                     doc.raw_dirty_at = Some(Instant::now());
                 }
-                transform = case.map(|c| (id, c));
+                op = picked.map(|p| (id, p));
             }
             ViewMode::Blocks => {
                 let mut edits: Vec<PendingEdit> = Vec::new();
@@ -1040,7 +1002,7 @@ impl ForgeApp {
                     stale_error: doc.parse_error.as_deref(),
                     pal,
                     total: 0,
-                    transform: &mut transform,
+                    op: &mut op,
                 };
                 block_view::show(ui, &doc.parsed, &mut cx);
 
@@ -1065,9 +1027,9 @@ impl ForgeApp {
         doc.find.validate_current();
         doc.find.resolve_seek();
         let pending = doc.find.pending.take();
-        if let Some((id, case)) = transform {
+        if let Some((id, op)) = op {
             let ctx = ui.ctx().clone();
-            self.transform_text(&ctx, Some(id), case);
+            self.text_op(&ctx, id, op);
         }
         if let Some(action) = pending {
             let ctx = ui.ctx().clone();
@@ -1083,7 +1045,6 @@ impl ForgeApp {
 impl eframe::App for ForgeApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         autoscroll::update(&mut self.autoscroll, ctx);
-        self.remember_editor(ctx);
         self.handle_shortcuts(ctx);
         self.handle_incoming(ctx);
         self.handle_dropped_files(ctx);
