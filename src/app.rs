@@ -1058,8 +1058,13 @@ impl eframe::App for ForgeApp {
         }
     }
 
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        text_ops::filter_input(ctx, raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         autoscroll::clear(ui.ctx());
+        text_ops::clear(ui.ctx());
         egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
         let bar_frame = egui::Frame::new().fill(tab_bar::fill(ui.visuals()));
         egui::Panel::top("tab_bar").resizable(false).frame(bar_frame).show(ui, |ui| self.tab_bar(ui));

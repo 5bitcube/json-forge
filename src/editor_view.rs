@@ -75,14 +75,11 @@ pub fn show(
                 if highlight && !ranges.is_empty() {
                     edit = edit.layouter(&mut layouter);
                 }
-                let before = text_ops::selection_before(ui.ctx(), id);
                 let out = edit.show(ui);
-                text_ops::keep_selection_on_right_click(ui.ctx(), id, before, &out.response.response);
-                out.response.response.context_menu(|ui| {
-                    if let Some(picked) = text_ops::context_menu(ui) {
-                        *op = Some(picked);
-                    }
-                });
+                text_ops::register(ui.ctx(), id, &out.response.response, json_text);
+                if let Some(picked) = text_ops::show_menu(ui.ctx(), id, &out.response.response) {
+                    *op = Some(picked);
+                }
                 if scroll {
                     if let Some(r) = current {
                         find::scroll_to_range(ui, &out, json_text, r);

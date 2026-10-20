@@ -1,6 +1,6 @@
-//! The editor context menu (Cut, Copy, Paste, Select All, Transform Text)
-//! and the text operations behind it. They act on the selection of a text
-//! field, or on the word under the caret where that makes sense.
+//! The editor context menu (Cut, Copy, Paste, Select All, Transform Text),
+//! the text operations behind it, and the pointer-press rules that keep a
+//! selection alive through right clicks and multi-clicks.
 
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
@@ -134,23 +134,140 @@ pub fn context_menu(ui: &mut egui::Ui) -> Option<TextOp> {
     op
 }
 
-/// egui moves the caret on any pointer press, so a right click would drop
-/// the selection the menu is about to act on. Load the state before showing
-/// the editor and hand it to `keep_selection_on_right_click` afterwards.
-pub fn selection_before(ctx: &egui::Context, id: egui::Id) -> Option<TextEditState> {
-    egui::TextEdit::load_state(ctx, id)
+/// A text field drawn last frame, so the input hook can tell what a press hit.
+#[derive(Clone, Copy)]
+struct EditorInfo {
+    id: egui::Id,
+    rect: egui::Rect,
+    layer: egui::LayerId,
+    chars: usize,
 }
 
-pub fn keep_selection_on_right_click(ctx: &egui::Context, id: egui::Id, before: Option<TextEditState>, response: &Response) {
-    let right_press = response.hovered() && ctx.input(|i| i.pointer.button_pressed(PointerButton::Secondary));
-    if !right_press {
-        return;
+#[derive(Clone, Copy, Default)]
+struct Clicks {
+    time: f64,
+    pos: egui::Pos2,
+    count: u32,
+}
+
+/// Presses the hook swallowed whose release must be swallowed too.
+#[derive(Clone, Copy, Default)]
+struct Pending {
+    menu: Option<egui::Id>,
+    primary: bool,
+}
+
+fn registry_key() -> egui::Id {
+    egui::Id::new("text_ops_editors")
+}
+
+fn open_menu_key(id: egui::Id) -> egui::Id {
+    id.with("open_menu")
+}
+
+/// Draw the context menu of field `id` after its `TextEdit::show`. It opens
+/// when `filter_input` saw a right click released over the field, and a
+/// primary click on the field closes it. Returns the item picked.
+pub fn show_menu(ctx: &egui::Context, id: egui::Id, response: &Response) -> Option<TextOp> {
+    let open_now = ctx.data_mut(|d| d.remove_temp::<bool>(open_menu_key(id))).unwrap_or(false);
+    let set = if open_now {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if response.clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    let mut picked = None;
+    egui::Popup::menu(response).at_pointer_fixed().open_memory(set).show(|ui| picked = context_menu(ui));
+    picked
+}
+
+/// Call once per frame before any editor is drawn.
+pub fn clear(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<Vec<EditorInfo>>(registry_key()));
+}
+
+/// Call after each `TextEdit::show` so `filter_input` can find the field.
+pub fn register(ctx: &egui::Context, id: egui::Id, response: &Response, text: &str) {
+    let info = EditorInfo { id, rect: response.rect, layer: response.layer_id, chars: text.chars().count() };
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<EditorInfo>>(registry_key()).push(info));
+}
+
+fn editor_at(ctx: &egui::Context, pos: egui::Pos2) -> Option<EditorInfo> {
+    let layer = ctx.layer_id_at(pos)?;
+    ctx.data(|d| {
+        d.get_temp::<Vec<EditorInfo>>(registry_key())
+            .and_then(|v| v.iter().copied().find(|e| e.layer == layer && e.rect.contains(pos)))
+    })
+}
+
+fn select_all(ctx: &egui::Context, editor: EditorInfo) {
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, editor.id) {
+        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(editor.chars))));
+        state.store(ctx, editor.id);
     }
-    if let (Some(before), Some(mut now)) = (before, egui::TextEdit::load_state(ctx, id)) {
-        now.cursor = before.cursor;
-        now.store(ctx, id);
-        ctx.request_repaint();
-    }
+}
+
+/// eframe's `raw_input_hook`: runs before egui sees the frame's input.
+///
+/// egui moves the caret on every pointer press and offers no way to opt out,
+/// so the presses that must leave a selection alone never reach it:
+/// - a right click over a text field (the context menu opens on the release
+///   instead, where egui would have opened it anyway);
+/// - the third and later clicks of a multi-click: three selects the whole
+///   field, more do nothing. One click (caret) and two (word) stay with egui.
+pub fn filter_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    let time = raw.time.unwrap_or_else(|| ctx.input(|i| i.time));
+    let (delay, dist) = ctx.options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
+    let pending_key = egui::Id::new("text_ops_pending");
+    let clicks_key = egui::Id::new("text_ops_clicks");
+    let mut pending: Pending = ctx.data(|d| d.get_temp(pending_key)).unwrap_or_default();
+
+    raw.events.retain(|event| {
+        let egui::Event::PointerButton { pos, button, pressed, .. } = event else { return true };
+        match (button, pressed) {
+            (PointerButton::Secondary, true) => match editor_at(ctx, *pos) {
+                Some(e) => {
+                    pending.menu = Some(e.id);
+                    false
+                }
+                None => true,
+            },
+            (PointerButton::Secondary, false) => match pending.menu.take() {
+                Some(id) => {
+                    if editor_at(ctx, *pos).is_some_and(|e| e.id == id) {
+                        ctx.data_mut(|d| d.insert_temp(open_menu_key(id), true));
+                    }
+                    false
+                }
+                None => true,
+            },
+            (PointerButton::Primary, true) => {
+                let Some(e) = editor_at(ctx, *pos) else { return true };
+                let last: Clicks = ctx.data(|d| d.get_temp(clicks_key)).unwrap_or_default();
+                let count = if time - last.time < delay && last.pos.distance(*pos) < dist { last.count + 1 } else { 1 };
+                ctx.data_mut(|d| d.insert_temp(clicks_key, Clicks { time, pos: *pos, count }));
+                if count < 3 {
+                    return true;
+                }
+                if count == 3 {
+                    select_all(ctx, e);
+                }
+                pending.primary = true;
+                false
+            }
+            (PointerButton::Primary, false) => {
+                if pending.primary {
+                    pending.primary = false;
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => true,
+        }
+    });
+    ctx.data_mut(|d| d.insert_temp(pending_key, pending));
 }
 
 fn is_word_char(c: char) -> bool {

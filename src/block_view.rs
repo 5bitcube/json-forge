@@ -784,14 +784,11 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                     if highlight {
                         edit = edit.layouter(&mut layouter);
                     }
-                    let before = text_ops::selection_before(ui.ctx(), edit_id);
                     let out = edit.show(ui);
-                    text_ops::keep_selection_on_right_click(ui.ctx(), edit_id, before, &out.response.response);
-                    out.response.response.context_menu(|ui| {
-                        if let Some(picked) = text_ops::context_menu(ui) {
-                            **op = Some((edit_id, picked));
-                        }
-                    });
+                    text_ops::register(ui.ctx(), edit_id, &out.response.response, &entry.text);
+                    if let Some(picked) = text_ops::show_menu(ui.ctx(), edit_id, &out.response.response) {
+                        **op = Some((edit_id, picked));
+                    }
                     if is_find_target && find.scroll_pending {
                         if let Some(r) = current_range {
                             find::scroll_to_range(ui, &out, &entry.text, r);
