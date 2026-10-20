@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod autoscroll;
 mod block_view;
 mod editor_view;
 mod file_ops;

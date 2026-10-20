@@ -2,6 +2,7 @@
 
 use eframe::egui;
 
+use crate::autoscroll;
 use crate::find::{self, Range};
 
 pub const EDITOR_ID: &str = "raw_editor";
@@ -45,7 +46,7 @@ pub fn show(ui: &mut egui::Ui, json_text: &mut String, error: Option<&str>, find
         }
     }
 
-    let changed = egui::ScrollArea::both()
+    let out = egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let size = egui::vec2(available.x - 16.0, available.y - 16.0);
@@ -71,8 +72,9 @@ pub fn show(ui: &mut egui::Ui, json_text: &mut String, error: Option<&str>, find
                 out.response.response.changed()
             })
             .inner
-        })
-        .inner;
+        });
+    autoscroll::record(ui, autoscroll::MAIN, &out);
+    let changed = out.inner;
 
     if let Some(f) = find {
         *f.scroll = scroll;

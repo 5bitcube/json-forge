@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::autoscroll::{self, AutoScroll};
 use crate::block_view::{self, BlockCtx, Palette};
 use crate::editor_view::{self, RawFind, EDITOR_ID};
 use crate::file_ops::{self, Confirm};
@@ -59,7 +60,7 @@ pub struct ForgeApp {
     last_title: String,
     allow_close: bool,
     close_now: bool,
-    autoscroll_origin: Option<egui::Pos2>,
+    autoscroll: Option<AutoScroll>,
 }
 
 const SAMPLE: &str = r#"{
@@ -128,7 +129,7 @@ impl ForgeApp {
             last_title: String::new(),
             allow_close: false,
             close_now: false,
-            autoscroll_origin: None,
+            autoscroll: None,
         };
 
         match initial {
@@ -595,64 +596,6 @@ impl ForgeApp {
 
     // ----- frame pieces -----------------------------------------------------
 
-    fn handle_autoscroll(&mut self, ctx: &egui::Context) {
-        let middle_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle));
-        let left_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
-        let right_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
-        let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
-
-        if middle_clicked {
-            if self.autoscroll_origin.is_some() {
-                self.autoscroll_origin = None;
-            } else if let Some(pos) = pointer_pos {
-                self.autoscroll_origin = Some(pos);
-            }
-        }
-        if left_clicked || right_clicked {
-            self.autoscroll_origin = None;
-        }
-
-        let Some(origin) = self.autoscroll_origin else { return };
-        let deadzone = 15.0;
-
-        if let Some(pos) = pointer_pos {
-            let dy = pos.y - origin.y;
-            if dy.abs() > deadzone {
-                let speed = (dy - dy.signum() * deadzone) * 0.15;
-                ctx.input_mut(|i| {
-                    i.smooth_scroll_delta.y -= speed;
-                });
-            }
-            if dy < -deadzone {
-                ctx.set_cursor_icon(egui::CursorIcon::ResizeNorth);
-            } else if dy > deadzone {
-                ctx.set_cursor_icon(egui::CursorIcon::ResizeSouth);
-            } else {
-                ctx.set_cursor_icon(egui::CursorIcon::None);
-            }
-        }
-
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("autoscroll")));
-        let r = 14.0;
-        let col = egui::Color32::from_rgb(100, 100, 100);
-        painter.circle_filled(origin, r, egui::Color32::from_rgba_premultiplied(245, 245, 245, 230));
-        painter.circle_stroke(origin, r, egui::Stroke::new(1.0, col));
-        painter.circle_filled(origin, 2.0, col);
-        let tip_up = origin + egui::vec2(0.0, -8.0);
-        painter.add(egui::Shape::convex_polygon(
-            vec![tip_up, tip_up + egui::vec2(-4.0, 5.0), tip_up + egui::vec2(4.0, 5.0)],
-            col,
-            egui::Stroke::NONE,
-        ));
-        let tip_down = origin + egui::vec2(0.0, 8.0);
-        painter.add(egui::Shape::convex_polygon(
-            vec![tip_down, tip_down + egui::vec2(-4.0, -5.0), tip_down + egui::vec2(4.0, -5.0)],
-            col,
-            egui::Stroke::NONE,
-        ));
-        ctx.request_repaint();
-    }
-
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
         let cmd_shift = Modifiers::COMMAND.plus(Modifiers::SHIFT);
@@ -1035,7 +978,7 @@ impl ForgeApp {
 
 impl eframe::App for ForgeApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.handle_autoscroll(ctx);
+        autoscroll::update(&mut self.autoscroll, ctx);
         self.handle_shortcuts(ctx);
         self.handle_dropped_files(ctx);
         self.handle_debounces(ctx);
@@ -1049,6 +992,7 @@ impl eframe::App for ForgeApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        autoscroll::clear(ui.ctx());
         egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
 
@@ -1081,5 +1025,8 @@ impl eframe::App for ForgeApp {
             }
             egui::CentralPanel::default().show(ui, |ui| self.main_view(ui));
         });
+
+        // Last, so its overlay sits above everything and its cursor wins.
+        autoscroll::overlay(&self.autoscroll, ui.ctx());
     }
 }

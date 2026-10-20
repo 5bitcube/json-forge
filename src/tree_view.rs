@@ -2,6 +2,8 @@
 //! so the app can scroll the block view to the matching block.
 
 use eframe::egui;
+
+use crate::autoscroll;
 use egui_json_tree::render::DefaultRender;
 use egui_json_tree::{DefaultExpand, JsonTree};
 
@@ -15,7 +17,7 @@ pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>) -> Option<Str
 
     let mut clicked: Option<String> = None;
 
-    egui::ScrollArea::both()
+    let out = egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             JsonTree::new("json-tree", val)
@@ -31,6 +33,7 @@ pub fn show(ui: &mut egui::Ui, parsed: &Option<serde_json::Value>) -> Option<Str
                 })
                 .show(ui);
         });
+    autoscroll::record(ui, autoscroll::TREE, &out);
 
     clicked
 }

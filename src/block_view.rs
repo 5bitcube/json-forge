@@ -10,6 +10,7 @@ use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, 
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::autoscroll;
 use crate::find::{self, BlockHit, FindState, Range as FindRange};
 use crate::model::{
     char_size, format_bytes, is_leaf, pointer_related, preview, value_text, BlockBuffer, DocStats, EditKind,
@@ -189,7 +190,7 @@ pub fn show(ui: &mut egui::Ui, parsed: &Option<Value>, cx: &mut BlockCtx) {
         return;
     };
 
-    egui::ScrollArea::vertical()
+    let out = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
@@ -222,6 +223,7 @@ pub fn show(ui: &mut egui::Ui, parsed: &Option<Value>, cx: &mut BlockCtx) {
             }
             ui.add_space(24.0);
         });
+    autoscroll::record(ui, autoscroll::MAIN, &out);
 }
 
 fn render_summary(ui: &mut egui::Ui, cx: &BlockCtx, val: &Value) {
