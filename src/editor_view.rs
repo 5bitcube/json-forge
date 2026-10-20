@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::autoscroll;
 use crate::find::{self, Range};
+use crate::text_case::{self, Case};
 
 pub const EDITOR_ID: &str = "raw_editor";
 
@@ -22,8 +23,16 @@ pub struct RawFind<'a> {
     pub highlight: bool,
 }
 
-/// Returns true when the text changed this frame.
-pub fn show(ui: &mut egui::Ui, id: egui::Id, json_text: &mut String, error: Option<&str>, find: Option<RawFind<'_>>) -> bool {
+/// Returns true when the text changed this frame. `transform` receives a
+/// case change picked from the context menu; the app applies it.
+pub fn show(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    json_text: &mut String,
+    error: Option<&str>,
+    find: Option<RawFind<'_>>,
+    transform: &mut Option<Case>,
+) -> bool {
     if let Some(err) = error {
         egui::Frame::new()
             .fill(egui::Color32::from_rgb(140, 45, 45))
@@ -67,6 +76,11 @@ pub fn show(ui: &mut egui::Ui, id: egui::Id, json_text: &mut String, error: Opti
                     edit = edit.layouter(&mut layouter);
                 }
                 let out = edit.show(ui);
+                out.response.response.context_menu(|ui| {
+                    if let Some(case) = text_case::menu(ui) {
+                        *transform = Some(case);
+                    }
+                });
                 if scroll {
                     if let Some(r) = current {
                         find::scroll_to_range(ui, &out, json_text, r);

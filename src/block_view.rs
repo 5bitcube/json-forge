@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use crate::autoscroll;
 use crate::find::{self, BlockHit, FindState, Range as FindRange};
+use crate::text_case::{self, Case};
 use crate::model::{
     char_size, format_bytes, is_leaf, pointer_related, preview, value_text, BlockBuffer, DocStats, EditKind,
     PendingEdit,
@@ -111,6 +112,8 @@ pub struct BlockCtx<'a> {
     pub pal: Palette,
     /// Output: number of blocks rendered (also the render-order index).
     pub total: usize,
+    /// Output: case change picked from an editor's context menu.
+    pub transform: &'a mut Option<(egui::Id, Case)>,
 }
 
 struct Block<'v> {
@@ -640,7 +643,7 @@ fn seed_text(kind: EditKind, value: &Value) -> String {
 }
 
 fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
-    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, .. } = cx;
+    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, transform, .. } = cx;
     let doc = *doc;
     let pal = *pal;
     let index = *total;
@@ -782,6 +785,11 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                         edit = edit.layouter(&mut layouter);
                     }
                     let out = edit.show(ui);
+                    out.response.response.context_menu(|ui| {
+                        if let Some(case) = text_case::menu(ui) {
+                            **transform = Some((edit_id, case));
+                        }
+                    });
                     if is_find_target && find.scroll_pending {
                         if let Some(r) = current_range {
                             find::scroll_to_range(ui, &out, &entry.text, r);

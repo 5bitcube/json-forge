@@ -6,6 +6,7 @@
 //! - Block edits mutate `parsed` and set `text_dirty_at`; after a debounce the
 //!   text is regenerated. `flush()` forces both to agree before save/format.
 
+use eframe::egui;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,6 +51,8 @@ pub struct Document {
     pub scroll_to: Option<String>,
     pub force_open: Option<bool>,
     pub find: FindState,
+    /// Last text field that had keyboard focus; Edit > Transform Text acts on it.
+    pub last_editor: Option<egui::Id>,
     /// Created as an untitled starter (sample or "New"). While it stays
     /// unmodified, opening a file reuses its tab instead of adding one.
     placeholder: bool,
@@ -96,6 +99,7 @@ impl Document {
             scroll_to: None,
             force_open: None,
             find: FindState::default(),
+            last_editor: None,
             placeholder: false,
         }
     }
