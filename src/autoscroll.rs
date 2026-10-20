@@ -206,14 +206,15 @@ pub fn overlay(state: &Option<AutoScroll>, ctx: &egui::Context) {
             ui.allocate_rect(screen, Sense::click_and_drag());
         });
 
+    // Nothing is drawn at the anchor itself: the cursor becomes the
+    // circle-with-arrows icon inside the dead zone and a one-way arrow
+    // outside it.
     let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("autoscroll_paint")));
-    paint_anchor(&painter, a.origin, 14.0, 4.0, a.area.axes);
-
     if let Some(p) = ctx.input(|i| i.pointer.latest_pos()) {
         ctx.set_cursor_icon(CursorIcon::None);
         match direction(p - a.origin, a.area.axes) {
             Some(dir) => paint_arrow(&painter, p, dir),
-            None => paint_anchor(&painter, p, 9.0, 3.0, a.area.axes),
+            None => paint_neutral(&painter, p, a.area.axes),
         }
     }
 }
@@ -225,8 +226,10 @@ fn tri(tip: Pos2, dir: Dir, size: f32) -> Shape {
     Shape::convex_polygon(vec![tip, base + v * size, base - v * size], INK, Stroke::NONE)
 }
 
-/// Circle with a dot and a triangle for each scrollable direction.
-fn paint_anchor(p: &Painter, c: Pos2, r: f32, tri_size: f32, axes: [bool; 2]) {
+/// Dead-zone cursor: circle with a dot and a triangle for each scrollable direction.
+fn paint_neutral(p: &Painter, c: Pos2, axes: [bool; 2]) {
+    let r = 14.0;
+    let tri_size = 4.0;
     p.circle_filled(c, r, FILL.gamma_multiply(0.92));
     p.circle_stroke(c, r, Stroke::new(1.0, INK));
     p.circle_filled(c, 2.0, INK);
