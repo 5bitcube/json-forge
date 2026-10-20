@@ -107,6 +107,8 @@ impl ForgeApp {
         // Maximize after creation: setting it in the ViewportBuilder together
         // with an inner size leaves the window flagged maximized at the small size.
         cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        // Light theme by default regardless of the OS setting; View > Dark Mode toggles it.
+        cc.egui_ctx.set_theme(egui::ThemePreference::Light);
 
         let mut app = Self {
             json_text: String::new(),
