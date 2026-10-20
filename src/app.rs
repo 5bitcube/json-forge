@@ -3,6 +3,7 @@
 
 use eframe::egui;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use crate::autoscroll::{self, AutoScroll};
@@ -13,6 +14,7 @@ use crate::file_ops::{self, Confirm};
 use crate::find::{self, BlockHit, FindAction, FindState, Seek};
 use crate::model::{format_bytes, pointer_parent, PendingEdit};
 use crate::recent::RecentFiles;
+use crate::single_instance;
 use crate::tab_bar::{self, TabEvent, TabLabel};
 use crate::tree_view;
 
@@ -37,6 +39,8 @@ pub struct ForgeApp {
     allow_close: bool,
     close_now: bool,
     autoscroll: Option<AutoScroll>,
+    /// Files handed over by later launches (see `single_instance`).
+    incoming: Receiver<Vec<PathBuf>>,
 }
 
 /// Short folder hint for a recent-file entry: the last directory component.
@@ -70,12 +74,21 @@ fn carry_find(from: &FindState, to: &mut FindState) {
 }
 
 impl ForgeApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, initial: Vec<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial: Vec<PathBuf>,
+        listener: Option<interprocess::local_socket::Listener>,
+    ) -> Self {
         // Maximize after creation: setting it in the ViewportBuilder together
         // with an inner size leaves the window flagged maximized at the small size.
         cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         // Light theme by default regardless of the OS setting; View > Dark Mode toggles it.
         cc.egui_ctx.set_theme(egui::ThemePreference::Light);
+
+        let (tx, incoming) = mpsc::channel();
+        if let Some(listener) = listener {
+            single_instance::serve(listener, cc.egui_ctx.clone(), tx);
+        }
 
         let mut app = Self {
             docs: Vec::new(),
@@ -87,6 +100,7 @@ impl ForgeApp {
             allow_close: false,
             close_now: false,
             autoscroll: None,
+            incoming,
         };
 
         for path in initial {
@@ -591,6 +605,21 @@ impl ForgeApp {
         }
     }
 
+    /// Files from another launch: open them and bring the window forward.
+    fn handle_incoming(&mut self, ctx: &egui::Context) {
+        let mut any = false;
+        while let Ok(paths) = self.incoming.try_recv() {
+            any = true;
+            for path in paths {
+                self.open_path(path);
+            }
+        }
+        if any {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -953,6 +982,7 @@ impl eframe::App for ForgeApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         autoscroll::update(&mut self.autoscroll, ctx);
         self.handle_shortcuts(ctx);
+        self.handle_incoming(ctx);
         self.handle_dropped_files(ctx);
         self.handle_debounces(ctx);
         self.handle_close(ctx);

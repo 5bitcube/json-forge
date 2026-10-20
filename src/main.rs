@@ -9,6 +9,7 @@ mod file_ops;
 mod find;
 mod model;
 mod recent;
+mod single_instance;
 mod tab_bar;
 mod tree_view;
 
@@ -19,6 +20,12 @@ fn main() -> eframe::Result<()> {
     // `json-forge.exe a.json b.json` opens one tab per file (also used by
     // Explorer "Open with").
     let initial: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+
+    // A running instance gets the files as new tabs; this process then exits.
+    let listener = match single_instance::claim(&initial) {
+        single_instance::Launch::Forwarded => return Ok(()),
+        single_instance::Launch::Primary(listener) => listener,
+    };
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -31,6 +38,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "JSON Forge",
         options,
-        Box::new(move |cc| Ok(Box::new(ForgeApp::new(cc, initial)))),
+        Box::new(move |cc| Ok(Box::new(ForgeApp::new(cc, initial, listener)))),
     )
 }
