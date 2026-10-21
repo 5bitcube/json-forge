@@ -76,7 +76,7 @@ pub fn show(
                     edit = edit.layouter(&mut layouter);
                 }
                 let out = edit.show(ui);
-                text_ops::register(ui.ctx(), id, &out.response.response, json_text);
+                text_ops::after_show(ui.ctx(), id, &out, json_text);
                 if let Some(picked) = text_ops::show_menu(ui.ctx(), id, &out.response.response) {
                     *op = Some(picked);
                 }

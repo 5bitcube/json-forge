@@ -165,6 +165,10 @@ fn open_menu_key(id: egui::Id) -> egui::Id {
     id.with("open_menu")
 }
 
+fn word_select_key(id: egui::Id) -> egui::Id {
+    id.with("select_word_at")
+}
+
 /// Draw the context menu of field `id` after its `TextEdit::show`. It opens
 /// when `filter_input` saw a right click released over the field, and a
 /// primary click on the field closes it. Returns the item picked.
@@ -187,8 +191,45 @@ pub fn clear(ctx: &egui::Context) {
     ctx.data_mut(|d| d.remove::<Vec<EditorInfo>>(registry_key()));
 }
 
-/// Call after each `TextEdit::show` so `filter_input` can find the field.
-pub fn register(ctx: &egui::Context, id: egui::Id, response: &Response, text: &str) {
+/// Call after each `TextEdit::show`: registers the field for `filter_input`
+/// and applies the word selection of a double click it swallowed.
+pub fn after_show(ctx: &egui::Context, id: egui::Id, out: &egui::text_edit::TextEditOutput, text: &str) {
+    register(ctx, id, &out.response.response, text);
+    let Some(pos) = ctx.data_mut(|d| d.remove_temp::<egui::Pos2>(word_select_key(id))) else { return };
+    let local = pos - out.galley_pos + egui::vec2(out.galley.rect.left(), 0.0);
+    let at = out.galley.cursor_from_pos(local).index.0;
+    let chars: Vec<char> = text.chars().collect();
+    let (a, b) = word_at(&chars, at);
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
+        state.store(ctx, id);
+    }
+    ctx.memory_mut(|m| m.request_focus(id));
+    ctx.request_repaint();
+}
+
+/// The word around char index `at`; a lone non-word char selects itself.
+fn word_at(chars: &[char], at: usize) -> (usize, usize) {
+    let n = chars.len();
+    let at = at.min(n);
+    let anchor = if at < n && is_word_char(chars[at]) {
+        at
+    } else if at > 0 && is_word_char(chars[at - 1]) {
+        at - 1
+    } else {
+        return (at, (at + 1).min(n));
+    };
+    let (mut a, mut b) = (anchor, anchor + 1);
+    while a > 0 && is_word_char(chars[a - 1]) {
+        a -= 1;
+    }
+    while b < n && is_word_char(chars[b]) {
+        b += 1;
+    }
+    (a, b)
+}
+
+fn register(ctx: &egui::Context, id: egui::Id, response: &Response, text: &str) {
     let info = EditorInfo { id, rect: response.rect, layer: response.layer_id, chars: text.chars().count() };
     ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<EditorInfo>>(registry_key()).push(info));
 }
@@ -230,8 +271,10 @@ pub fn system_double_click_delay() -> f64 {
 /// so the presses that must leave a selection alone never reach it:
 /// - a right click over a text field (the context menu opens on the release
 ///   instead, where egui would have opened it anyway);
-/// - the third and later clicks of a multi-click: three selects the whole
-///   field, more do nothing. One click (caret) and two (word) stay with egui.
+/// - the second and later clicks of a multi-click: two selects the word,
+///   three the whole field, more do nothing. Only the first click, the one
+///   that places the caret, reaches egui; its own double/triple detection
+///   never fires for these fields, which keeps its line-select quirk out.
 pub fn filter_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
     let time = raw.time.unwrap_or_else(|| ctx.input(|i| i.time));
     let (delay, dist) = ctx.options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
@@ -263,11 +306,13 @@ pub fn filter_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
                 let last: Clicks = ctx.data(|d| d.get_temp(clicks_key)).unwrap_or_default();
                 let count = if time - last.time < delay && last.pos.distance(*pos) < dist { last.count + 1 } else { 1 };
                 ctx.data_mut(|d| d.insert_temp(clicks_key, Clicks { time, pos: *pos, count }));
-                if count < 3 {
-                    return true;
-                }
-                if count == 3 {
-                    select_all(ctx, e);
+                match count {
+                    1 => return true,
+                    2 => {
+                        ctx.data_mut(|d| d.insert_temp(word_select_key(e.id), *pos));
+                    }
+                    3 => select_all(ctx, e),
+                    _ => {}
                 }
                 pending.primary = true;
                 false
@@ -401,6 +446,17 @@ mod tests {
         let mut spaced = String::from("a  b");
         st = state_with(2, 2);
         assert_eq!(apply(TextOp::Case(Case::Upper), &mut spaced, &mut st, None), Err("Select some text first"));
+    }
+
+    #[test]
+    fn word_at_picks_the_word_under_or_before_the_index() {
+        let c: Vec<char> = "foo_bar, baz".chars().collect();
+        assert_eq!(word_at(&c, 0), (0, 7));
+        assert_eq!(word_at(&c, 7), (0, 7)); // just past the word
+        assert_eq!(word_at(&c, 8), (8, 9)); // the space
+        assert_eq!(word_at(&c, 10), (9, 12));
+        assert_eq!(word_at(&c, 99), (9, 12));
+        assert_eq!(word_at(&[], 0), (0, 0));
     }
 
     #[test]

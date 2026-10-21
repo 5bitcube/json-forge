@@ -785,7 +785,7 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                         edit = edit.layouter(&mut layouter);
                     }
                     let out = edit.show(ui);
-                    text_ops::register(ui.ctx(), edit_id, &out.response.response, &entry.text);
+                    text_ops::after_show(ui.ctx(), edit_id, &out, &entry.text);
                     if let Some(picked) = text_ops::show_menu(ui.ctx(), edit_id, &out.response.response) {
                         **op = Some((edit_id, picked));
                     }
