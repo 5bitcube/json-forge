@@ -85,6 +85,8 @@ impl ForgeApp {
         cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         // Light theme by default regardless of the OS setting; View > Dark Mode toggles it.
         cc.egui_ctx.set_theme(egui::ThemePreference::Light);
+        // Double and triple clicks follow the OS mouse setting, not egui's 0.3 s.
+        cc.egui_ctx.options_mut(|o| o.input_options.max_double_click_delay = text_ops::system_double_click_delay());
 
         let (tx, incoming) = mpsc::channel();
         if let Some(listener) = listener {

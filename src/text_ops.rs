@@ -208,6 +208,22 @@ fn select_all(ctx: &egui::Context, editor: EditorInfo) {
     }
 }
 
+/// The time, in seconds, within which two clicks count as a double click.
+/// egui defaults to 0.3 s; Windows users set theirs in the mouse settings
+/// (0.5 s by default), so that is what their fingers are trained on. Set it
+/// on the egui options at startup; `filter_input` reads it from there.
+pub fn system_double_click_delay() -> f64 {
+    #[cfg(windows)]
+    {
+        // SAFETY: plain FFI call with no arguments; returns milliseconds.
+        let ms = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
+        if ms > 0 {
+            return f64::from(ms) / 1000.0;
+        }
+    }
+    0.3
+}
+
 /// eframe's `raw_input_hook`: runs before egui sees the frame's input.
 ///
 /// egui moves the caret on every pointer press and offers no way to opt out,
