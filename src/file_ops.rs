@@ -54,9 +54,32 @@ pub enum Confirm {
     Cancel,
 }
 
+/// Ask whether to save `name` before it goes away.
+///
+/// On Windows this is a plain `MessageBoxW` without an icon: every dialog
+/// that shows one (which rfd always does) also plays the system alert sound.
+#[cfg(windows)]
+pub fn confirm_unsaved(name: &str) -> Confirm {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, MessageBoxW, IDNO, IDYES, MB_DEFBUTTON1, MB_TASKMODAL, MB_YESNOCANCEL,
+    };
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let title = wide("Unsaved changes");
+    let text = wide(&format!("Save changes to {}?", name));
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    let result = unsafe {
+        MessageBoxW(GetForegroundWindow(), text.as_ptr(), title.as_ptr(), MB_YESNOCANCEL | MB_DEFBUTTON1 | MB_TASKMODAL)
+    };
+    match result {
+        IDYES => Confirm::Save,
+        IDNO => Confirm::Discard,
+        _ => Confirm::Cancel,
+    }
+}
+
+#[cfg(not(windows))]
 pub fn confirm_unsaved(name: &str) -> Confirm {
     let result = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Warning)
         .set_title("Unsaved changes")
         .set_description(format!("Save changes to {}?", name))
         .set_buttons(rfd::MessageButtons::YesNoCancel)
