@@ -9,7 +9,7 @@
 
 use eframe::egui;
 use egui::text::{ByteIndex, CCursor, CCursorRange, LayoutJob, LayoutSection, TextFormat};
-use egui::{Align, Align2, Color32, FontId, Key, Modifiers, RichText};
+use egui::{Align, Align2, Color32, FontId, Key, Modifiers, RichText, Stroke};
 use regex::Regex;
 use std::collections::HashMap;
 
@@ -409,9 +409,20 @@ pub fn highlight_colors(dark: bool) -> (Color32, Color32) {
     }
 }
 
-/// Monospace layout of `text` with match backgrounds. Ranges that no longer
-/// fit the text (it can change mid-frame while typing) are skipped.
-pub fn highlight_job(ui: &egui::Ui, text: &str, wrap_width: f32, ranges: &[Range], current: Option<Range>) -> LayoutJob {
+/// A byte range to underline, and the color to do it in.
+pub type Underline = (Range, Color32);
+
+/// Monospace layout of `text` with match backgrounds and spelling underlines.
+/// Each list is sorted by position; ranges that overlap an earlier one or no
+/// longer fit the text (it can change mid-frame while typing) are skipped.
+pub fn layout_job(
+    ui: &egui::Ui,
+    text: &str,
+    wrap_width: f32,
+    ranges: &[Range],
+    current: Option<Range>,
+    underlines: &[Underline],
+) -> LayoutJob {
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let color = ui
         .style()
@@ -420,28 +431,49 @@ pub fn highlight_job(ui: &egui::Ui, text: &str, wrap_width: f32, ranges: &[Range
         .unwrap_or_else(|| ui.visuals().widgets.inactive.text_color());
     let (bg_all, bg_cur) = highlight_colors(ui.visuals().dark_mode);
 
-    let plain = TextFormat { font_id: font_id.clone(), color, ..Default::default() };
+    let fits = |(s, e): Range| s < e && e <= text.len() && text.is_char_boundary(s) && text.is_char_boundary(e);
+    let mut last = 0;
+    let bgs: Vec<Range> = ranges.iter().copied().filter(|&r| fits(r) && r.0 >= std::mem::replace(&mut last, r.1)).collect();
+    last = 0;
+    let uls: Vec<Underline> =
+        underlines.iter().copied().filter(|&(r, _)| fits(r) && r.0 >= std::mem::replace(&mut last, r.1)).collect();
+
+    let mut cuts: Vec<usize> = vec![0, text.len()];
+    cuts.extend(bgs.iter().flat_map(|&(s, e)| [s, e]));
+    cuts.extend(uls.iter().flat_map(|&((s, e), _)| [s, e]));
+    cuts.sort_unstable();
+    cuts.dedup();
+
     let mut job = LayoutJob { text: text.to_owned(), ..Default::default() };
     job.wrap.max_width = wrap_width;
-
-    let mut pos = 0;
-    for &(s, e) in ranges {
-        if s < pos || e > text.len() || s >= e || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
-            continue;
+    let (mut bi, mut ui_) = (0, 0);
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        while bi < bgs.len() && bgs[bi].1 <= a {
+            bi += 1;
         }
-        if s > pos {
-            job.sections.push(LayoutSection { leading_space: 0.0, byte_range: ByteIndex(pos)..ByteIndex(s), format: plain.clone() });
+        let background = match bgs.get(bi) {
+            Some(&(s, e)) if s <= a && b <= e => {
+                if current == Some((s, e)) {
+                    bg_cur
+                } else {
+                    bg_all
+                }
+            }
+            _ => Color32::TRANSPARENT,
+        };
+        while ui_ < uls.len() && uls[ui_].0 .1 <= a {
+            ui_ += 1;
         }
-        let bg = if current == Some((s, e)) { bg_cur } else { bg_all };
+        let underline = match uls.get(ui_) {
+            Some(&((s, e), c)) if s <= a && b <= e => Stroke::new(1.5, c),
+            _ => Stroke::NONE,
+        };
         job.sections.push(LayoutSection {
             leading_space: 0.0,
-            byte_range: ByteIndex(s)..ByteIndex(e),
-            format: TextFormat { font_id: font_id.clone(), color, background: bg, ..Default::default() },
+            byte_range: ByteIndex(a)..ByteIndex(b),
+            format: TextFormat { font_id: font_id.clone(), color, background, underline, ..Default::default() },
         });
-        pos = e;
-    }
-    if pos < text.len() {
-        job.sections.push(LayoutSection { leading_space: 0.0, byte_range: ByteIndex(pos)..ByteIndex(text.len()), format: plain });
     }
     job
 }

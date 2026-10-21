@@ -2,6 +2,15 @@
 //! and small formatting helpers used by every view.
 
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static REV: AtomicU64 = AtomicU64::new(1);
+
+/// A revision number no buffer has had before. Caches keyed by (pointer,
+/// revision) can then never match a buffer that was dropped and re-seeded.
+pub fn next_rev() -> u64 {
+    REV.fetch_add(1, Ordering::Relaxed)
+}
 
 /// How a block's text maps onto the JSON value it edits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -29,7 +38,8 @@ pub struct BlockBuffer {
     pub text: String,
     pub error: Option<String>,
     pub kind: EditKind,
-    /// Bumped on every text change; lets caches (find results) stay valid.
+    /// Replaced by `next_rev()` on every text change; lets caches (find
+    /// results, spelling) tell revisions apart.
     pub rev: u64,
 }
 

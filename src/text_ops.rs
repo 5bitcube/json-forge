@@ -1,11 +1,13 @@
-//! The editor context menu (Cut, Copy, Paste, Select All, Transform Text),
-//! the text operations behind it, and the pointer-press rules that keep a
-//! selection alive through right clicks and multi-clicks.
+//! The editor context menu (spelling fixes, Cut, Copy, Paste, Select All,
+//! Transform Text), the text operations behind it, and the pointer-press
+//! rules that keep a selection alive through right clicks and multi-clicks.
 
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
-use egui::text_edit::TextEditState;
+use egui::text_edit::{TextEditOutput, TextEditState};
 use egui::{PointerButton, Response};
+
+use crate::spell::{self, Issue, Kind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Case {
@@ -37,13 +39,19 @@ impl Case {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TextOp {
     Cut,
     Copy,
     Paste,
     SelectAll,
     Case(Case),
+    /// Replace chars `start..end` with `text`: a spelling or grammar fix.
+    Replace { start: usize, end: usize, text: String },
+    /// Add the word to the personal dictionary.
+    AddWord(String),
+    /// Stop flagging the word until the app restarts.
+    IgnoreWord(String),
 }
 
 /// What `apply` did: whether the text changed and what should go to the clipboard.
@@ -105,10 +113,36 @@ fn sentence_case(s: &str) -> String {
     out
 }
 
-/// Context menu for a text field. Returns the item clicked.
-pub fn context_menu(ui: &mut egui::Ui) -> Option<TextOp> {
+/// Context menu for a text field, headed by the fixes for `issue` when the
+/// menu was opened over a flagged word. Returns the item clicked.
+pub fn context_menu(ui: &mut egui::Ui, issue: Option<&Issue>) -> Option<TextOp> {
     let mut op = None;
     ui.set_min_width(190.0);
+    if let Some(issue) = issue {
+        ui.set_max_width(280.0);
+        for fix in &issue.fixes {
+            if ui.button(&fix.label).clicked() {
+                op = Some(TextOp::Replace { start: issue.start, end: issue.end, text: fix.replacement.clone() });
+            }
+        }
+        if issue.fixes.is_empty() {
+            ui.add_enabled(false, egui::Button::new("No suggestions"));
+        }
+        match issue.kind {
+            Kind::Spelling => {
+                if ui.button("Add to Dictionary").clicked() {
+                    op = Some(TextOp::AddWord(issue.text.clone()));
+                }
+                if ui.button("Ignore Word").clicked() {
+                    op = Some(TextOp::IgnoreWord(issue.text.clone()));
+                }
+            }
+            Kind::Grammar => {
+                ui.add(egui::Label::new(egui::RichText::new(&issue.message).weak().small()).wrap());
+            }
+        }
+        ui.separator();
+    }
     if ui.add(egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
         op = Some(TextOp::Cut);
     }
@@ -169,20 +203,46 @@ fn word_select_key(id: egui::Id) -> egui::Id {
     id.with("select_word_at")
 }
 
+fn menu_issue_key(id: egui::Id) -> egui::Id {
+    id.with("menu_issue")
+}
+
+/// Char index under screen position `pos` in a just-shown field.
+pub fn char_at_pos(out: &TextEditOutput, pos: egui::Pos2) -> usize {
+    let local = pos - out.galley_pos + egui::vec2(out.galley.rect.left(), 0.0);
+    out.galley.cursor_from_pos(local).index.0
+}
+
+/// The issue under `pos`: at the char there, else the one before it (the
+/// right half of a glyph resolves to the cursor after it).
+pub fn issue_at_pos<'a>(out: &TextEditOutput, text: &str, issues: &'a [Issue], pos: egui::Pos2) -> Option<&'a Issue> {
+    if issues.is_empty() {
+        return None;
+    }
+    let ci = char_at_pos(out, pos);
+    spell::issue_at(text, issues, ci).or_else(|| ci.checked_sub(1).and_then(|c| spell::issue_at(text, issues, c)))
+}
+
 /// Draw the context menu of field `id` after its `TextEdit::show`. It opens
 /// when `filter_input` saw a right click released over the field, and a
-/// primary click on the field closes it. Returns the item picked.
-pub fn show_menu(ctx: &egui::Context, id: egui::Id, response: &Response) -> Option<TextOp> {
-    let open_now = ctx.data_mut(|d| d.remove_temp::<bool>(open_menu_key(id))).unwrap_or(false);
-    let set = if open_now {
+/// primary click on the field closes it. `issues` are the field's spelling
+/// results; the one under the right click heads the menu. Returns the item
+/// picked.
+pub fn show_menu(ctx: &egui::Context, id: egui::Id, out: &TextEditOutput, text: &str, issues: &[Issue]) -> Option<TextOp> {
+    let response = &out.response.response;
+    let open_at = ctx.data_mut(|d| d.remove_temp::<egui::Pos2>(open_menu_key(id)));
+    let set = if let Some(pos) = open_at {
+        let issue = issue_at_pos(out, text, issues, pos).cloned();
+        ctx.data_mut(|d| d.insert_temp(menu_issue_key(id), issue));
         Some(egui::SetOpenCommand::Bool(true))
     } else if response.clicked() {
         Some(egui::SetOpenCommand::Bool(false))
     } else {
         None
     };
+    let issue: Option<Issue> = ctx.data(|d| d.get_temp::<Option<Issue>>(menu_issue_key(id))).flatten();
     let mut picked = None;
-    egui::Popup::menu(response).at_pointer_fixed().open_memory(set).show(|ui| picked = context_menu(ui));
+    egui::Popup::menu(response).at_pointer_fixed().open_memory(set).show(|ui| picked = context_menu(ui, issue.as_ref()));
     picked
 }
 
@@ -196,8 +256,7 @@ pub fn clear(ctx: &egui::Context) {
 pub fn after_show(ctx: &egui::Context, id: egui::Id, out: &egui::text_edit::TextEditOutput, text: &str) {
     register(ctx, id, &out.response.response, text);
     let Some(pos) = ctx.data_mut(|d| d.remove_temp::<egui::Pos2>(word_select_key(id))) else { return };
-    let local = pos - out.galley_pos + egui::vec2(out.galley.rect.left(), 0.0);
-    let at = out.galley.cursor_from_pos(local).index.0;
+    let at = char_at_pos(out, pos);
     let chars: Vec<char> = text.chars().collect();
     let (a, b) = word_at(&chars, at);
     if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
@@ -295,7 +354,7 @@ pub fn filter_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
             (PointerButton::Secondary, false) => match pending.menu.take() {
                 Some(id) => {
                     if editor_at(ctx, *pos).is_some_and(|e| e.id == id) {
-                        ctx.data_mut(|d| d.insert_temp(open_menu_key(id), true));
+                        ctx.data_mut(|d| d.insert_temp(open_menu_key(id), *pos));
                     }
                     false
                 }
@@ -361,6 +420,19 @@ pub fn apply(op: TextOp, text: &mut String, state: &mut TextEditState, clipboard
         state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(a + clip.chars().count()))));
         return Ok(Applied { changed: true, copied: None });
     }
+    if let TextOp::Replace { start, end, text: with } = &op {
+        if start > end || *end > n {
+            return Err("The text changed; check it again");
+        }
+        let (ba, bb) = (byte_at(*start), byte_at(*end));
+        text.replace_range(ba..bb, with);
+        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(start + with.chars().count()))));
+        return Ok(Applied { changed: true, copied: None });
+    }
+    if matches!(op, TextOp::AddWord(_) | TextOp::IgnoreWord(_)) {
+        // Dictionary changes are the app's business; the text stays.
+        return Ok(unchanged);
+    }
 
     if a == b {
         while a > 0 && is_word_char(chars[a - 1]) {
@@ -396,7 +468,9 @@ pub fn apply(op: TextOp, text: &mut String, state: &mut TextEditState, clipboard
             state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(a + replaced.chars().count()))));
             Ok(Applied { changed, copied: None })
         }
-        TextOp::SelectAll | TextOp::Paste => unreachable!("handled above"),
+        TextOp::SelectAll | TextOp::Paste | TextOp::Replace { .. } | TextOp::AddWord(_) | TextOp::IgnoreWord(_) => {
+            unreachable!("handled above")
+        }
     }
 }
 

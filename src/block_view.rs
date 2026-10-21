@@ -12,11 +12,12 @@ use std::collections::HashMap;
 
 use crate::autoscroll;
 use crate::find::{self, BlockHit, FindState, Range as FindRange};
-use crate::text_ops::{self, TextOp};
 use crate::model::{
-    char_size, format_bytes, is_leaf, pointer_related, preview, value_text, BlockBuffer, DocStats, EditKind,
-    PendingEdit,
+    char_size, format_bytes, is_leaf, next_rev, pointer_related, preview, value_text, BlockBuffer, DocStats,
+    EditKind, PendingEdit,
 };
+use crate::spell::{self, Checker, Issue};
+use crate::text_ops::{self, TextOp};
 
 /// Blocks larger than this start collapsed.
 const AUTO_COLLAPSE_CHARS: usize = 2000;
@@ -114,6 +115,8 @@ pub struct BlockCtx<'a> {
     pub total: usize,
     /// Output: item picked from an editor's context menu.
     pub op: &'a mut Option<(egui::Id, TextOp)>,
+    /// Spelling and grammar checker; `None` when the user turned it off.
+    pub spell: Option<&'a mut Checker>,
 }
 
 struct Block<'v> {
@@ -642,8 +645,20 @@ fn seed_text(kind: EditKind, value: &Value) -> String {
     }
 }
 
+/// Explain the flagged word under the pointer.
+fn spell_tooltip(ui: &egui::Ui, out: &egui::text_edit::TextEditOutput, text: &str, issues: &[Issue]) {
+    let resp = &out.response.response;
+    if issues.is_empty() || !resp.contains_pointer() {
+        return;
+    }
+    let Some(pos) = ui.ctx().pointer_latest_pos() else { return };
+    if let Some(issue) = text_ops::issue_at_pos(out, text, issues, pos) {
+        resp.clone().on_hover_text_at_pointer(issue.tooltip());
+    }
+}
+
 fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
-    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, op, .. } = cx;
+    let BlockCtx { doc, buffers, edits, find, scroll_to, force_open, pal, total, op, spell, .. } = cx;
     let doc = *doc;
     let pal = *pal;
     let index = *total;
@@ -653,7 +668,7 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
         text: seed_text(b.kind, b.value),
         error: None,
         kind: b.kind,
-        rev: 0,
+        rev: next_rev(),
     });
 
     let is_target = scroll_to.as_deref().is_some_and(|t| pointer_related(&b.pointer, t));
@@ -685,6 +700,20 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
     if is_target || (is_find_target && find.scroll_pending) {
         state.set_open(true);
     }
+
+    // Spelling: only string blocks that are open on screen get checked.
+    let issues: &[Issue] = match spell {
+        Some(ch) if b.kind == EditKind::Text && state.is_open() => {
+            ch.issues_for(ui.ctx(), doc, &b.pointer, entry.rev, &entry.text)
+        }
+        _ => &[],
+    };
+    let (ul_spelling, ul_grammar) = spell::underline_colors(ui.visuals().dark_mode);
+    let underlines: Vec<find::Underline> = spell::byte_ranges(&entry.text, issues)
+        .into_iter()
+        .map(|(r, i)| (r, if issues[i].kind == spell::Kind::Spelling { ul_spelling } else { ul_grammar }))
+        .collect();
+    let bg_ranges: &[FindRange] = if highlight { &ranges } else { &[] };
 
     let stroke_color = if is_target { b.accent } else { pal.block_stroke };
     let frame = egui::Frame::new()
@@ -771,7 +800,7 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                         find.select_pending = false;
                     }
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let job = find::highlight_job(ui, buf.as_str(), wrap_width, &ranges, current_range);
+                        let job = find::layout_job(ui, buf.as_str(), wrap_width, bg_ranges, current_range, &underlines);
                         ui.fonts_mut(|f| f.layout_job(job))
                     };
                     let mut edit = match b.kind {
@@ -781,12 +810,13 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                     .id(edit_id)
                     .code_editor()
                     .desired_width(f32::INFINITY);
-                    if highlight {
+                    if highlight || !underlines.is_empty() {
                         edit = edit.layouter(&mut layouter);
                     }
                     let out = edit.show(ui);
                     text_ops::after_show(ui.ctx(), edit_id, &out, &entry.text);
-                    if let Some(picked) = text_ops::show_menu(ui.ctx(), edit_id, &out.response.response) {
+                    spell_tooltip(ui, &out, &entry.text, issues);
+                    if let Some(picked) = text_ops::show_menu(ui.ctx(), edit_id, &out, &entry.text, issues) {
                         **op = Some((edit_id, picked));
                     }
                     if is_find_target && find.scroll_pending {
@@ -796,7 +826,7 @@ fn render_block(ui: &mut egui::Ui, cx: &mut BlockCtx, b: Block<'_>) {
                         find.scroll_pending = false;
                     }
                     if out.response.response.changed() {
-                        entry.rev += 1;
+                        entry.rev = next_rev();
                         edits.push(PendingEdit { pointer: b.pointer.clone(), kind: b.kind, text: entry.text.clone() });
                     }
                 });

@@ -65,7 +65,7 @@ pub fn show(
             let size = egui::vec2(available.x - 16.0, available.y - 16.0);
             ui.allocate_ui_with_layout(size, egui::Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
                 let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                    let job = find::highlight_job(ui, buf.as_str(), wrap_width, ranges, current);
+                    let job = find::layout_job(ui, buf.as_str(), wrap_width, ranges, current, &[]);
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
                 let mut edit = egui::TextEdit::multiline(json_text)
@@ -77,7 +77,7 @@ pub fn show(
                 }
                 let out = edit.show(ui);
                 text_ops::after_show(ui.ctx(), id, &out, json_text);
-                if let Some(picked) = text_ops::show_menu(ui.ctx(), id, &out.response.response) {
+                if let Some(picked) = text_ops::show_menu(ui.ctx(), id, &out, json_text, &[]) {
                     *op = Some(picked);
                 }
                 if scroll {

@@ -12,9 +12,11 @@ use crate::document::{self, Document, ViewMode, SAMPLE};
 use crate::editor_view::{self, RawFind};
 use crate::file_ops::{self, Confirm};
 use crate::find::{self, BlockHit, FindAction, FindState, Seek};
-use crate::model::{format_bytes, pointer_parent, PendingEdit};
+use crate::model::{format_bytes, next_rev, pointer_parent, PendingEdit};
 use crate::recent::RecentFiles;
+use crate::settings::Settings;
 use crate::single_instance;
+use crate::spell::{self, Checker};
 use crate::tab_bar::{self, TabEvent, TabLabel};
 use crate::text_ops::{self, TextOp};
 use crate::tree_view;
@@ -42,6 +44,8 @@ pub struct ForgeApp {
     autoscroll: Option<AutoScroll>,
     /// Files handed over by later launches (see `single_instance`).
     incoming: Receiver<Vec<PathBuf>>,
+    settings: Settings,
+    spell: Checker,
 }
 
 /// Short folder hint for a recent-file entry: the last directory component.
@@ -93,6 +97,8 @@ impl ForgeApp {
             single_instance::serve(listener, cc.egui_ctx.clone(), tx);
         }
 
+        let settings = Settings::load();
+        let spell = Checker::start(cc.egui_ctx.clone(), spell::sidecar_path(Some(&settings.spell_checker)));
         let mut app = Self {
             docs: Vec::new(),
             active: 0,
@@ -104,6 +110,8 @@ impl ForgeApp {
             close_now: false,
             autoscroll: None,
             incoming,
+            settings,
+            spell,
         };
 
         for path in initial {
@@ -181,6 +189,7 @@ impl ForgeApp {
             return;
         }
         let closed = self.docs.remove(i);
+        self.spell.forget(closed.id);
         if self.docs.is_empty() {
             let mut doc = self.placeholder(SAMPLE);
             carry_find(&closed.find, &mut doc.find);
@@ -355,6 +364,19 @@ impl ForgeApp {
 
     /// Run a context-menu item on the text field `id` of the active document.
     fn text_op(&mut self, ctx: &egui::Context, id: egui::Id, op: TextOp) {
+        match &op {
+            TextOp::AddWord(w) => {
+                self.spell.add_word(w);
+                self.set_status(format!("Added \u{201c}{}\u{201d} to your dictionary", w), false);
+                return;
+            }
+            TextOp::IgnoreWord(w) => {
+                self.spell.ignore_word(w);
+                self.set_status(format!("Ignoring \u{201c}{}\u{201d} until the next start", w), false);
+                return;
+            }
+            _ => {}
+        }
         let clipboard = if op == TextOp::Paste {
             match file_ops::clipboard_text() {
                 Ok(text) => Some(text),
@@ -398,7 +420,7 @@ impl ForgeApp {
             }
             Some(p) => {
                 let buf = doc.block_buffers.get_mut(&p).expect("pointer came from the map");
-                buf.rev += 1;
+                buf.rev = next_rev();
                 let edit = PendingEdit { pointer: p, kind: buf.kind, text: buf.text.clone() };
                 doc.apply_edits(vec![edit]);
             }
@@ -507,7 +529,7 @@ impl ForgeApp {
                 } else {
                     match doc.block_buffers.get_mut(&t.pointer) {
                         Some(buf) => m.replace_one(&mut buf.text, t.range, &repl).map(|end| {
-                            buf.rev += 1;
+                            buf.rev = next_rev();
                             (end, Some(PendingEdit { pointer: t.pointer.clone(), kind: buf.kind, text: buf.text.clone() }))
                         }),
                         None => None,
@@ -547,7 +569,7 @@ impl ForgeApp {
                         let (new_text, c) = m.replace_all(&buf.text, &repl);
                         if c > 0 {
                             buf.text = new_text;
-                            buf.rev += 1;
+                            buf.rev = next_rev();
                             n += c;
                             edits.push(PendingEdit { pointer: p, kind: buf.kind, text: buf.text.clone() });
                         }
@@ -862,6 +884,10 @@ impl ForgeApp {
             if ui.add(egui::Button::new("Find Previous").shortcut_text("Shift+F3")).clicked() {
                 self.doc_mut().find.pending = Some(FindAction::Prev);
             }
+            ui.separator();
+            if ui.checkbox(&mut self.settings.spell_check, "Check Spelling and Grammar").changed() {
+                self.settings.save();
+            }
         });
     }
 
@@ -942,6 +968,14 @@ impl ForgeApp {
             ui.label(format!("{} keys", doc.stats.key_count));
             ui.separator();
             ui.label(format_bytes(doc.json_text.len()));
+            if self.settings.spell_check && doc.view_mode == ViewMode::Blocks {
+                let n = self.spell.issue_count(doc.id);
+                if n > 0 {
+                    ui.separator();
+                    ui.label(format!("{} spelling/grammar issue{}", n, if n == 1 { "" } else { "s" }))
+                        .on_hover_text("Counted over the blocks that are open. Hover an underline for details, right-click for fixes.");
+                }
+            }
 
             ui.separator();
             match &doc.file_path {
@@ -965,6 +999,7 @@ impl ForgeApp {
 
     fn main_view(&mut self, ui: &mut egui::Ui) {
         let mut op: Option<(egui::Id, TextOp)> = None;
+        let spell = self.settings.spell_check.then_some(&mut self.spell);
         let doc = &mut self.docs[self.active];
         doc.find.hits.clear();
         match doc.view_mode {
@@ -1005,6 +1040,7 @@ impl ForgeApp {
                     pal,
                     total: 0,
                     op: &mut op,
+                    spell,
                 };
                 block_view::show(ui, &doc.parsed, &mut cx);
 
@@ -1046,6 +1082,7 @@ impl ForgeApp {
 
 impl eframe::App for ForgeApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.spell.poll();
         autoscroll::update(&mut self.autoscroll, ctx);
         self.handle_shortcuts(ctx);
         self.handle_incoming(ctx);

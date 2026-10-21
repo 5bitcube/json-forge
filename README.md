@@ -15,6 +15,7 @@ JSON Forge opens a JSON file and shows it two ways at once: a collapsible tree o
 - **Tabs** – open as many documents as you like. Opening a file while JSON Forge is already running sends it to the existing window as a new tab.
 - **Find and replace** – Atom-style panel at the bottom with regex, case and whole-word toggles, a match counter, Find All to filter blocks down to the ones that match, and Replace / Replace All in either view.
 - **Context menu** – right-click in any text field for Cut, Copy, Paste, Select All and Transform Text (UPPER CASE, lower case, Title Case, Sentence case) on the selection or the word under the cursor.
+- **Spelling and grammar** – string values are checked as you type: misspellings get a red underline, grammar slips (wrong article, its/it's, subject-verb agreement, repeated words) a blue one. Hover for the explanation, right-click for suggestions, Add to Dictionary or Ignore Word. Checking runs in a separate process, `spellchecker.exe`, which must sit next to `json-forge.exe`; without it the app simply does not check. It skips code spans, URLs and strings that are themselves JSON, and can be turned off in the Edit menu. English only. Your added words live in `%APPDATA%\json-forge\dictionary.txt`.
 - **Tree navigation** – click any node in the tree to scroll the block view to it.
 - **JSON Lines** – `.jsonl` files and any text that is one JSON value per line load as an array of records and save back the same way.
 - **Format and minify**, paste the clipboard as a new document, copy the document, drag and drop, recent files, light and dark themes, and Chrome-style middle-button autoscroll.
@@ -43,7 +44,7 @@ Requires a Rust toolchain. On Windows:
 build.bat
 ```
 
-builds the release binary and copies it next to the script. Elsewhere, `cargo build --release` produces `target/release/json-forge`. The app embeds its icons at build time; on Windows that needs the resource compiler that ships with the Windows SDK, which comes with the MSVC toolchain.
+builds both executables and copies them next to the script. Elsewhere, `cargo build --release` produces `target/release/json-forge` and `target/release/spellchecker`; keep them in the same folder. The app embeds its icons at build time; on Windows that needs the resource compiler that ships with the Windows SDK, which comes with the MSVC toolchain.
 
 ## Opening .json files with JSON Forge (Windows)
 
@@ -57,7 +58,7 @@ Multiple files can be passed on the command line; each opens in its own tab.
 
 ## Built with
 
-[egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe) for the UI, [egui_json_tree](https://github.com/dmackdev/egui_json_tree) for the tree pane, [serde_json](https://github.com/serde-rs/json) with `preserve_order` so keys stay in file order, [regex](https://github.com/rust-lang/regex) for find and replace, [rfd](https://github.com/PolyMeilex/rfd) for native dialogs, and [interprocess](https://github.com/kotauskas/interprocess) for the single-window hand-off.
+[egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe) for the UI, [egui_json_tree](https://github.com/dmackdev/egui_json_tree) for the tree pane, [serde_json](https://github.com/serde-rs/json) with `preserve_order` so keys stay in file order, [regex](https://github.com/rust-lang/regex) for find and replace, [Harper](https://github.com/Automattic/harper) for spelling and grammar, [rfd](https://github.com/PolyMeilex/rfd) for native dialogs, and [interprocess](https://github.com/kotauskas/interprocess) for the single-window hand-off.
 
 ## License
 

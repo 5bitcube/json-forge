@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::settings::data_dir;
+
 const MAX_RECENT: usize = 10;
 
 pub struct RecentFiles {
@@ -11,10 +13,7 @@ pub struct RecentFiles {
 }
 
 fn store_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("json-forge").join("recent.json")
+    data_dir().join("recent.json")
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
