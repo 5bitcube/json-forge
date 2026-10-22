@@ -11,7 +11,7 @@ JSON Forge opens a JSON file and shows it two ways at once: a collapsible tree o
 ## Features
 
 - **Block view** – every leaf value is a card you can edit in place. Strings edit as plain text, objects and arrays as JSON that must parse before it is applied. Headers show the JSON path and size, and anything over a couple of thousand characters starts collapsed. A summary card at the top shows the document size and key count.
-- **Raw mode** – the whole document in a code editor, with parse errors reported by line and column. Switch back to Blocks when it parses again.
+- **Raw mode** – the whole document in a code editor with line numbers, and parse errors reported by line and column. Switch back to Blocks when it parses again.
 - **Tabs** – open as many documents as you like. Opening a file while JSON Forge is already running sends it to the existing window as a new tab.
 - **Find and replace** – Atom-style panel at the bottom with regex, case and whole-word toggles, a match counter, Find All to filter blocks down to the ones that match, and Replace / Replace All in either view.
 - **Context menu** – right-click in any text field for Cut, Copy, Paste, Select All and Transform Text (UPPER CASE, lower case, Title Case, Sentence case) on the selection or the word under the cursor.
