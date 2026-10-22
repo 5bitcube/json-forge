@@ -317,6 +317,34 @@ impl ForgeApp {
         }
     }
 
+    /// Re-read the active document from disk in place: the tab, its view
+    /// mode, scroll position and collapsed blocks all stay. Unsaved edits are
+    /// dropped after confirmation.
+    fn reload(&mut self) {
+        let Some(path) = self.doc().file_path.clone() else {
+            self.set_status("This document has no file to reload", true);
+            return;
+        };
+        if self.doc().modified && !file_ops::confirm_reload(&self.doc().name()) {
+            return;
+        }
+        match file_ops::read(&path) {
+            Ok(text) => {
+                let doc = &mut self.docs[self.active];
+                doc.load_text(text, Some(path));
+                let id = doc.id;
+                let name = doc.name();
+                let error = doc.parse_error.clone();
+                self.spell.forget(id);
+                match error {
+                    None => self.set_status(format!("Reloaded {}", name), false),
+                    Some(e) => self.set_status(format!("Reloaded with invalid JSON: {}", e), true),
+                }
+            }
+            Err(e) => self.set_status(e, true),
+        }
+    }
+
     fn paste_document(&mut self, text: String) {
         if text.trim().is_empty() {
             self.set_status("Clipboard has no text", true);
@@ -609,6 +637,9 @@ impl ForgeApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
+            self.reload();
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
             self.new_document();
         }
@@ -826,6 +857,10 @@ impl ForgeApp {
                     self.open_path(path);
                 }
             });
+            let has_file = self.doc().file_path.is_some();
+            if ui.add_enabled(has_file, egui::Button::new("Reload").shortcut_text("F5")).clicked() {
+                self.reload();
+            }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() {
                 self.save();

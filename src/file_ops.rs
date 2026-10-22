@@ -91,6 +91,32 @@ pub fn confirm_unsaved(name: &str) -> Confirm {
     }
 }
 
+/// Ask whether to drop unsaved edits to `name` and re-read it from disk.
+#[cfg(windows)]
+pub fn confirm_reload(name: &str) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, MessageBoxW, IDYES, MB_DEFBUTTON2, MB_TASKMODAL, MB_YESNO,
+    };
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let title = wide("Reload file");
+    let text = wide(&format!("{} has unsaved changes. Reload it from disk and lose them?", name));
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    let result = unsafe {
+        MessageBoxW(GetForegroundWindow(), text.as_ptr(), title.as_ptr(), MB_YESNO | MB_DEFBUTTON2 | MB_TASKMODAL)
+    };
+    result == IDYES
+}
+
+#[cfg(not(windows))]
+pub fn confirm_reload(name: &str) -> bool {
+    rfd::MessageDialog::new()
+        .set_title("Reload file")
+        .set_description(format!("{} has unsaved changes. Reload it from disk and lose them?", name))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes
+}
+
 pub fn clipboard_text() -> Result<String, String> {
     let mut cb = arboard::Clipboard::new().map_err(|e| format!("clipboard: {}", e))?;
     cb.get_text().map_err(|e| format!("clipboard: {}", e))

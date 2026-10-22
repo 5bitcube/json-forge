@@ -25,6 +25,7 @@ JSON Forge opens a JSON file and shows it two ways at once: a collapsible tree o
 | Keys | Action |
 | --- | --- |
 | `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` | Open, save, save as |
+| `F5` | Reload the document from disk (after another program changed it) |
 | `Ctrl+N` / `Ctrl+W` | New tab, close tab |
 | `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Alt+1`…`Alt+9` | Switch tabs |
 | `Ctrl+V` (no field focused) | Paste the clipboard as a new document |
