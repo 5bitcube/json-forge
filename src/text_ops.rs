@@ -289,7 +289,14 @@ fn word_at(chars: &[char], at: usize) -> (usize, usize) {
 }
 
 fn register(ctx: &egui::Context, id: egui::Id, response: &Response, text: &str) {
-    let info = EditorInfo { id, rect: response.rect, layer: response.layer_id, chars: text.chars().count() };
+    // The clipped rect, not `response.rect`: a field inside a scroll area is
+    // as tall as its text and runs on under whatever sits below the viewport
+    // (the find panel, the status bar). Presses there must not reach it.
+    let rect = response.interact_rect;
+    if !rect.is_positive() {
+        return;
+    }
+    let info = EditorInfo { id, rect, layer: response.layer_id, chars: text.chars().count() };
     ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<EditorInfo>>(registry_key()).push(info));
 }
 
